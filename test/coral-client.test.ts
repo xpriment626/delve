@@ -68,7 +68,7 @@ test("buildLocalSessionRequest passes only agent-needed secrets", () => {
   assert.deepEqual(options.EXA_API_KEY, { type: "string", value: "exa-secret" });
 });
 
-test("agentsReady accepts connected waiting agents and rejects partial state", () => {
+test("agentsReady accepts only connected waiting agents and rejects partial state", () => {
   const ready = [
     {
       name: "latency-researcher",
@@ -92,6 +92,9 @@ test("agentsReady accepts connected waiting agents and rejects partial state", (
     }
   ];
 
-  assert.equal(agentsReady(ready, ["latency-researcher", "systems-researcher"]), true);
+  assert.equal(agentsReady(ready, ["latency-researcher", "systems-researcher"]), false);
   assert.equal(agentsReady(ready, ["latency-researcher", "quality-researcher"]), false);
+
+  ready[1].status.connectionStatus.communicationStatus.type = "waiting_message";
+  assert.equal(agentsReady(ready, ["latency-researcher", "systems-researcher"]), true);
 });

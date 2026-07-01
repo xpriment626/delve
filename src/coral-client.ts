@@ -238,7 +238,7 @@ export function agentsReady(states: readonly CoralAgentState[], expected: readon
     return (
       status?.type === "running" &&
       connection?.type === "connected" &&
-      (communication?.type === "waiting_message" || communication?.type === "thinking" || communication?.type === "sleeping")
+      communication?.type === "waiting_message"
     );
   });
 }
