@@ -45,11 +45,14 @@ delve --json research run \
   --format markdown \
   --db /tmp/delve/blackboard.db \
   --out /tmp/delve/artifacts \
+  --topology fixed \
   --coral-url http://localhost:5555 \
   --auth-key dev
 ```
 
 If `--coral-url` points at a non-default or remote server, Delve will not auto-start a local server for that URL. Start that server yourself, then run Delve against it.
+
+`--topology fixed` is the default. `--topology dynamic-revision` keeps the same fixed specialist roster but turns `revise` verdicts into targeted follow-up tasks before finalization. In live mode, Delve opens task-specific Coral threads, mentions the assigned specialist, waits for linked follow-up notes, and records the topology trace in SQLite and the final package.
 
 Offline deterministic fixture:
 
@@ -81,12 +84,15 @@ delve --json blackboard sources --run <run-id> --db /tmp/delve/blackboard.db
 delve --json blackboard claims --run <run-id> --db /tmp/delve/blackboard.db
 delve --json blackboard negotiation --run <run-id> --db /tmp/delve/blackboard.db
 delve --json blackboard quality --run <run-id> --db /tmp/delve/blackboard.db
+delve --json blackboard topology --run <run-id> --db /tmp/delve/blackboard.db
 delve --json final --file /tmp/delve/artifacts/<run-id>/final-package.json
 ```
 
 The app-owned SQLite database is the durable blackboard. Agents write topic-specific notes, source metadata, evidence-backed claims, confidence, caveats, and negotiation verdicts. Agents can only read through bounded single-statement `SELECT` tools.
 
 `blackboard quality` summarizes degraded agent work, revision requests, and dissenting verdicts. Use it before handing a run to Codex for user-facing synthesis.
+
+`blackboard topology` summarizes the selected topology mode, topology events, revision tasks, open revision tasks, and degraded topology actions.
 
 ## Model And Source Routing
 
@@ -110,6 +116,7 @@ Use `final-package.json` as the source of truth. Its important fields are:
 - `claims`: evidence-backed claims with confidence, caveats, and source URLs.
 - `negotiation`: debate transcripts and verdicts; status is `complete`, `complete_with_revision_requests`, or `complete_with_dissent`.
 - `runQuality`: degraded work, revision requests, and dissenting verdicts extracted for quick review.
+- `topologyTrace`: selected topology mode, topology events, revision tasks, open tasks, and degraded topology actions.
 - `synthesis.document.recommendedSections`: suggested long-form document sections.
 - `synthesis.slides.recommendedSlides`: suggested slide structure.
 - `markdown`: a ready Markdown research artifact.
@@ -144,7 +151,8 @@ Live flow:
 5. CLI proves `finalizeRun()` is blocked before negotiation.
 6. CLI creates a negotiation thread and mentions each agent.
 7. Each agent reviews blackboard contents and records a debate verdict.
-8. CLI finalizes only after every agent has a verdict, preserves revision/dissent status, and writes `research.md` and `final-package.json`.
+8. In `dynamic-revision` mode, CLI converts `revise` verdicts into revision tasks, opens topic-specific Coral threads, mentions assigned agents, and resolves tasks when linked follow-up notes appear.
+9. CLI finalizes only after every agent has a verdict, preserves revision/dissent/topology status, and writes `research.md` and `final-package.json`.
 
 ## Verification
 
