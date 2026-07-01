@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { buildRoleResearchQuery, negotiateRole, reviseRole } from "../src/agent-research.ts";
 import { parseExaTextResults } from "../src/exa-research.ts";
-import { parseWaitForMentionPayload } from "../src/eve-coral-agent.ts";
+import { initialReplayAfterUnixTime, parseWaitForMentionPayload } from "../src/eve-coral-agent.ts";
 
 test("parseWaitForMentionPayload extracts text, thread id, and sender", () => {
   const payload = JSON.stringify({
@@ -19,6 +19,10 @@ test("parseWaitForMentionPayload extracts text, thread id, and sender", () => {
     threadId: "thread-1",
     senderName: "conductor"
   });
+});
+
+test("initial replay cursor looks back to catch startup race mentions", () => {
+  assert.equal(initialReplayAfterUnixTime(100_000, 30_000), 70_000);
 });
 
 test("role research queries are topic-adaptive and differentiated", () => {

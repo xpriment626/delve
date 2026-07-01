@@ -26,6 +26,10 @@ export interface ResearchTaskMessage {
   revisionRationale?: string;
 }
 
+export function initialReplayAfterUnixTime(now = Date.now(), lookbackMs = 30_000): number {
+  return now - lookbackMs;
+}
+
 export function parseWaitForMentionPayload(payload: string): MentionPayload {
   const parsed = JSON.parse(payload) as { message?: { text?: unknown; threadId?: unknown; senderName?: unknown } };
   const message = parsed.message;
@@ -55,7 +59,7 @@ export async function runCoralEveAgent(input: {
     const sendTool = findTool(tools.tools.map((tool) => tool.name), /send_message/);
     console.error(JSON.stringify({ role: input.role, event: "connected", waitTool, sendTool }));
 
-    let replayAfterUnixTime = Date.now();
+    let replayAfterUnixTime = initialReplayAfterUnixTime();
     for (let handled = 0; handled < input.maxMessages; handled += 1) {
       const waitResult = await client.callTool({
         name: waitTool,
