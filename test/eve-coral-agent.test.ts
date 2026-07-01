@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { buildRoleResearchQuery, negotiateRole, reviseRole } from "../src/agent-research.ts";
 import { parseExaTextResults } from "../src/exa-research.ts";
-import { initialReplayAfterUnixTime, parseWaitForMentionPayload } from "../src/eve-coral-agent.ts";
+import { initialReplayAfterUnixTime, isWaitForMentionTimeout, parseWaitForMentionPayload } from "../src/eve-coral-agent.ts";
 
 test("parseWaitForMentionPayload extracts text, thread id, and sender", () => {
   const payload = JSON.stringify({
@@ -23,6 +23,11 @@ test("parseWaitForMentionPayload extracts text, thread id, and sender", () => {
 
 test("initial replay cursor looks back to catch startup race mentions", () => {
   assert.equal(initialReplayAfterUnixTime(100_000, 30_000), 70_000);
+});
+
+test("wait_for_mention timeout is retryable but transport failure is not", () => {
+  assert.equal(isWaitForMentionTimeout(new Error("MCP error -32001: Request timed out")), true);
+  assert.equal(isWaitForMentionTimeout(new Error("fetch failed")), false);
 });
 
 test("role research queries are topic-adaptive and differentiated", () => {

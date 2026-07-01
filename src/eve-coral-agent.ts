@@ -30,6 +30,11 @@ export function initialReplayAfterUnixTime(now = Date.now(), lookbackMs = 30_000
   return now - lookbackMs;
 }
 
+export function isWaitForMentionTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /MCP error -32001: Request timed out|Request timed out/.test(message);
+}
+
 export function parseWaitForMentionPayload(payload: string): MentionPayload {
   const parsed = JSON.parse(payload) as { message?: { text?: unknown; threadId?: unknown; senderName?: unknown } };
   const message = parsed.message;
@@ -60,11 +65,21 @@ export async function runCoralEveAgent(input: {
     console.error(JSON.stringify({ role: input.role, event: "connected", waitTool, sendTool }));
 
     let replayAfterUnixTime = initialReplayAfterUnixTime();
-    for (let handled = 0; handled < input.maxMessages; handled += 1) {
-      const waitResult = await client.callTool({
-        name: waitTool,
-        arguments: { currentUnixTime: replayAfterUnixTime, maxWaitMs: input.waitMs }
-      });
+    let handled = 0;
+    while (handled < input.maxMessages) {
+      let waitResult: unknown;
+      try {
+        waitResult = await client.callTool({
+          name: waitTool,
+          arguments: { currentUnixTime: replayAfterUnixTime, maxWaitMs: input.waitMs }
+        });
+      } catch (error) {
+        if (isWaitForMentionTimeout(error)) {
+          console.error(JSON.stringify({ role: input.role, event: "wait_for_mention_timeout_retry" }));
+          continue;
+        }
+        throw error;
+      }
       const mention = parseWaitForMentionPayload(extractText(waitResult));
       const task = parseResearchTaskMessage(mention.text);
       const dbPath = task.dbPath ?? input.dbPath;
@@ -87,6 +102,7 @@ export async function runCoralEveAgent(input: {
       });
       console.error(JSON.stringify({ role: input.role, event: result.type, runId: task.runId, ...result.payload }));
       replayAfterUnixTime = Date.now();
+      handled += 1;
     }
   } finally {
     await client.close();
