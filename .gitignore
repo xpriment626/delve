@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local Delve/Coral runtime artifacts
+artifacts/
+.deep-research-yolo/
+checkpoint/
+*.db
+*.db-shm
+*.db-wal
+
+# Internal notes and reference material
+docs/
+
+# Logs and temporary files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+coverage/
+tmp/
+temp/
+.DS_Store
