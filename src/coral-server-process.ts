@@ -23,10 +23,10 @@ export async function ensureCoralServerReady(options: EnsureCoralServerOptions):
   }
 
   if (!canAutoStartCoralUrl(options.coralUrl)) {
-    throw new Error(`Coral server is not reachable at ${options.coralUrl}; auto-start only supports local port 5555`);
+    throw new Error(`Coral server is not reachable at ${options.coralUrl}; auto-start only supports explicit local HTTP ports`);
   }
 
-  const child = spawn("npx", ["-y", "coralos-dev@latest", "server", "start"], {
+  const child = spawn("npx", buildCoralServerStartArgs(options.coralUrl), {
     cwd: options.projectRoot,
     env: buildCoralServerEnv(options.projectRoot, options.env),
     stdio: ["ignore", "pipe", "pipe"]
@@ -66,13 +66,25 @@ export function buildCoralServerEnv(projectRoot: string, env: NodeJS.ProcessEnv)
 }
 
 export function canAutoStartCoralUrl(coralUrl: string): boolean {
+  return coralBindPort(coralUrl) !== undefined;
+}
+
+export function buildCoralServerStartArgs(coralUrl: string): string[] {
+  const port = coralBindPort(coralUrl);
+  if (!port) throw new Error(`Unsupported Coral auto-start URL: ${coralUrl}`);
+  const args = ["-y", "coralos-dev@latest", "server", "start"];
+  if (port !== "5555") args.push("--", `--network.bind-port=${port}`);
+  return args;
+}
+
+function coralBindPort(coralUrl: string): string | undefined {
   try {
     const url = new URL(coralUrl);
     const isLoopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1";
-    const isDefaultPort = url.port === "" || url.port === "5555";
-    return isLoopback && isDefaultPort;
+    if (!isLoopback || url.protocol !== "http:" || !url.port) return undefined;
+    return url.port;
   } catch {
-    return false;
+    return undefined;
   }
 }
 

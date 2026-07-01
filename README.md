@@ -21,7 +21,7 @@ npm run install-local
 
 The installer creates a `delve` wrapper in `~/.local/bin` using the same Node binary that built the project. It removes the old `deep-research-yolo` and `dryolo` wrappers if they exist.
 
-`delve research run` auto-starts Coral on `http://localhost:5555` if it is not already reachable. Start Coral manually only when you want foreground server logs or a reusable server process:
+`delve research run` auto-starts Coral on `http://localhost:5555` if it is not already reachable. If port 5555 is already owned by another local Coral process, pass another explicit loopback URL such as `--coral-url http://localhost:5556`; Delve will pass the matching bind port to Coral. Start Coral manually only when you want foreground server logs or a reusable server process:
 
 ```bash
 npm run coral:start
@@ -50,7 +50,7 @@ delve --json research run \
   --auth-key dev
 ```
 
-If `--coral-url` points at a non-default or remote server, Delve will not auto-start a local server for that URL. Start that server yourself, then run Delve against it.
+If `--coral-url` points at a remote server, Delve will not auto-start that server. Start it yourself, then run Delve against it.
 
 `--topology fixed` is the default. `--topology dynamic-revision` keeps the same fixed specialist roster but turns `revise` verdicts into targeted follow-up tasks before finalization. In live mode, Delve opens task-specific Coral threads, mentions the assigned specialist, waits for linked follow-up notes, and records the topology trace in SQLite and the final package.
 
