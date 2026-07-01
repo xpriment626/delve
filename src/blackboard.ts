@@ -5,6 +5,8 @@ export type ArtifactFormat = "markdown" | "json" | "docx" | "slides";
 export type NegotiationPhase = "debate" | "consensus";
 export type VerdictStance = "accept" | "revise" | "dissent";
 export type NegotiationStatus = "complete" | "complete_with_revision_requests" | "complete_with_dissent";
+export type TopologyMode = "fixed" | "dynamic-revision";
+export type RevisionTaskStatus = "open" | "resolved" | "waived";
 
 export interface AgentExecutionMetadata {
   modelProvider: string;
@@ -33,6 +35,8 @@ export interface RunRecord {
   format: ArtifactFormat;
   agents: string[];
   createdAt: string;
+  topologyMode: TopologyMode;
+  topologyRationale: string;
 }
 
 export interface NoteRecord {
@@ -43,6 +47,7 @@ export interface NoteRecord {
   content: string;
   sources: SourceRef[];
   execution: AgentExecutionMetadata;
+  revisionTaskId?: string;
 }
 
 export interface ClaimRecord {
@@ -54,6 +59,7 @@ export interface ClaimRecord {
   confidence: number;
   caveats: string[];
   sourceUrls: string[];
+  revisionTaskId?: string;
 }
 
 export interface AggregatedSourceRecord extends SourceRef {
@@ -85,6 +91,44 @@ export interface NegotiationRoundRecord {
   verdicts: NegotiationVerdict[];
 }
 
+export interface RevisionTaskRecord {
+  id: string;
+  runId: string;
+  sourceRoundId: number;
+  sourceAgentName: string;
+  rationale: string;
+  assignedAgents: string[];
+  topic: string;
+  status: RevisionTaskStatus;
+  threadId?: string;
+  resolutionNote?: string;
+  evidenceNoteIds: number[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TopologyEventRecord {
+  id: number;
+  runId: string;
+  eventType: string;
+  taskId?: string;
+  actor: string;
+  targetAgents: string[];
+  threadId?: string;
+  rationale: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface TopologyTrace {
+  mode: TopologyMode;
+  initialRationale: string;
+  events: TopologyEventRecord[];
+  revisionTasks: RevisionTaskRecord[];
+  openRevisionTasks: RevisionTaskRecord[];
+  degradedTopologyActions: TopologyEventRecord[];
+}
+
 export interface FinalPackage {
   runId: string;
   topic: string;
@@ -97,6 +141,7 @@ export interface FinalPackage {
     rounds: NegotiationRoundRecord[];
   };
   runQuality: RunQualitySummary;
+  topologyTrace: TopologyTrace;
   synthesis: SynthesisHandoff;
   markdown: string;
 }
@@ -171,18 +216,31 @@ export class Blackboard {
     this.migrate();
   }
 
-  createRun(input: { topic: string; format: ArtifactFormat; agents: string[] }): RunRecord {
+  createRun(input: {
+    topic: string;
+    format: ArtifactFormat;
+    agents: string[];
+    topologyMode?: TopologyMode;
+    topologyRationale?: string;
+  }): RunRecord {
     const now = new Date().toISOString();
+    const topologyMode = input.topologyMode ?? "fixed";
     const run: RunRecord = {
       id: randomUUID(),
       topic: input.topic,
       format: input.format,
       agents: input.agents,
-      createdAt: now
+      createdAt: now,
+      topologyMode,
+      topologyRationale: input.topologyRationale ?? defaultTopologyRationale(topologyMode)
     };
     this.db
-      .prepare("insert into runs (id, topic, format, agents_json, created_at) values (?, ?, ?, ?, ?)")
-      .run(run.id, run.topic, run.format, JSON.stringify(run.agents), run.createdAt);
+      .prepare(
+        `insert into runs
+         (id, topic, format, agents_json, created_at, topology_mode, topology_rationale)
+         values (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(run.id, run.topic, run.format, JSON.stringify(run.agents), run.createdAt, run.topologyMode, run.topologyRationale);
     return run;
   }
 
@@ -199,14 +257,16 @@ export class Blackboard {
     content: string;
     sources: SourceRef[];
     execution?: Partial<AgentExecutionMetadata>;
+    revisionTaskId?: string;
   }): NoteRecord {
     this.assertRunExists(input.runId);
+    if (input.revisionTaskId) this.assertRevisionTaskExists(input.runId, input.revisionTaskId);
     const execution = normalizeExecution(input.execution);
     const result = this.db
       .prepare(
         `insert into notes
-         (run_id, agent_name, angle, content, sources_json, model_provider, model_reason, model_used, degraded, degradation_reasons_json)
-         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (run_id, agent_name, angle, content, sources_json, model_provider, model_reason, model_used, degraded, degradation_reasons_json, revision_task_id)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.runId,
@@ -218,7 +278,8 @@ export class Blackboard {
         execution.modelReason,
         execution.modelUsed ? 1 : 0,
         execution.degraded ? 1 : 0,
-        JSON.stringify(execution.degradationReasons)
+        JSON.stringify(execution.degradationReasons),
+        input.revisionTaskId ?? null
       );
     return {
       id: Number(result.lastInsertRowid),
@@ -227,7 +288,8 @@ export class Blackboard {
       angle: input.angle,
       content: input.content,
       sources: input.sources,
-      execution
+      execution,
+      ...(input.revisionTaskId ? { revisionTaskId: input.revisionTaskId } : {})
     };
   }
 
@@ -239,15 +301,17 @@ export class Blackboard {
     confidence: number;
     caveats?: string[];
     sourceUrls?: string[];
+    revisionTaskId?: string;
   }): ClaimRecord {
     this.assertRunExists(input.runId);
+    if (input.revisionTaskId) this.assertRevisionTaskExists(input.runId, input.revisionTaskId);
     const caveats = input.caveats ?? [];
     const sourceUrls = input.sourceUrls ?? [];
     const result = this.db
       .prepare(
         `insert into claims
-         (run_id, agent_name, claim, evidence_note_ids_json, confidence, caveats_json, source_urls_json)
-         values (?, ?, ?, ?, ?, ?, ?)`
+         (run_id, agent_name, claim, evidence_note_ids_json, confidence, caveats_json, source_urls_json, revision_task_id)
+         values (?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.runId,
@@ -256,7 +320,8 @@ export class Blackboard {
         JSON.stringify(input.evidenceNoteIds),
         input.confidence,
         JSON.stringify(caveats),
-        JSON.stringify(sourceUrls)
+        JSON.stringify(sourceUrls),
+        input.revisionTaskId ?? null
       );
     return {
       id: Number(result.lastInsertRowid),
@@ -266,7 +331,8 @@ export class Blackboard {
       evidenceNoteIds: input.evidenceNoteIds,
       confidence: input.confidence,
       caveats,
-      sourceUrls
+      sourceUrls,
+      ...(input.revisionTaskId ? { revisionTaskId: input.revisionTaskId } : {})
     };
   }
 
@@ -314,6 +380,137 @@ export class Blackboard {
       topic: input.topic,
       transcript: input.transcript,
       verdicts
+    };
+  }
+
+  createRevisionTask(input: {
+    runId: string;
+    sourceRoundId: number;
+    sourceAgentName: string;
+    rationale: string;
+    assignedAgents: string[];
+    topic: string;
+    threadId?: string;
+  }): RevisionTaskRecord {
+    this.assertRunExists(input.runId);
+    const now = new Date().toISOString();
+    const task: RevisionTaskRecord = {
+      id: `rev-${randomUUID()}`,
+      runId: input.runId,
+      sourceRoundId: input.sourceRoundId,
+      sourceAgentName: input.sourceAgentName,
+      rationale: input.rationale,
+      assignedAgents: uniqueStrings(input.assignedAgents),
+      topic: input.topic,
+      status: "open",
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      evidenceNoteIds: [],
+      createdAt: now,
+      updatedAt: now
+    };
+    this.db
+      .prepare(
+        `insert into revision_tasks
+         (id, run_id, source_round_id, source_agent_name, rationale, assigned_agents_json, topic, status, thread_id, resolution_note, evidence_note_ids_json, created_at, updated_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        task.id,
+        task.runId,
+        task.sourceRoundId,
+        task.sourceAgentName,
+        task.rationale,
+        JSON.stringify(task.assignedAgents),
+        task.topic,
+        task.status,
+        task.threadId ?? null,
+        null,
+        JSON.stringify(task.evidenceNoteIds),
+        task.createdAt,
+        task.updatedAt
+      );
+    return task;
+  }
+
+  resolveRevisionTask(input: {
+    runId: string;
+    taskId: string;
+    status: RevisionTaskStatus;
+    resolutionNote: string;
+    evidenceNoteIds?: number[];
+    threadId?: string;
+  }): RevisionTaskRecord {
+    if (input.status === "open") throw new Error("resolveRevisionTask requires resolved or waived status");
+    this.assertRevisionTaskExists(input.runId, input.taskId);
+    const updatedAt = new Date().toISOString();
+    this.db
+      .prepare(
+        `update revision_tasks
+         set status = ?, resolution_note = ?, evidence_note_ids_json = ?, thread_id = coalesce(?, thread_id), updated_at = ?
+         where run_id = ? and id = ?`
+      )
+      .run(
+        input.status,
+        input.resolutionNote,
+        JSON.stringify(input.evidenceNoteIds ?? []),
+        input.threadId ?? null,
+        updatedAt,
+        input.runId,
+        input.taskId
+      );
+    return this.getRevisionTask(input.runId, input.taskId);
+  }
+
+  attachRevisionTaskThread(input: { runId: string; taskId: string; threadId: string }): RevisionTaskRecord {
+    this.assertRevisionTaskExists(input.runId, input.taskId);
+    this.db
+      .prepare("update revision_tasks set thread_id = ?, updated_at = ? where run_id = ? and id = ?")
+      .run(input.threadId, new Date().toISOString(), input.runId, input.taskId);
+    return this.getRevisionTask(input.runId, input.taskId);
+  }
+
+  recordTopologyEvent(input: {
+    runId: string;
+    eventType: string;
+    taskId?: string;
+    actor: string;
+    targetAgents?: string[];
+    threadId?: string;
+    rationale: string;
+    details?: Record<string, unknown>;
+  }): TopologyEventRecord {
+    this.assertRunExists(input.runId);
+    if (input.taskId) this.assertRevisionTaskExists(input.runId, input.taskId);
+    const targetAgents = uniqueStrings(input.targetAgents ?? []);
+    const createdAt = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `insert into topology_events
+         (run_id, event_type, task_id, actor, target_agents_json, thread_id, rationale, details_json, created_at)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.runId,
+        input.eventType,
+        input.taskId ?? null,
+        input.actor,
+        JSON.stringify(targetAgents),
+        input.threadId ?? null,
+        input.rationale,
+        JSON.stringify(input.details ?? {}),
+        createdAt
+      );
+    return {
+      id: Number(result.lastInsertRowid),
+      runId: input.runId,
+      eventType: input.eventType,
+      ...(input.taskId ? { taskId: input.taskId } : {}),
+      actor: input.actor,
+      targetAgents,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+      rationale: input.rationale,
+      details: input.details ?? {},
+      createdAt
     };
   }
 
@@ -365,6 +562,36 @@ export class Blackboard {
     }));
   }
 
+  listRevisionTasks(runId: string): RevisionTaskRecord[] {
+    this.assertRunExists(runId);
+    return (
+      this.db.prepare("select * from revision_tasks where run_id = ? order by created_at, id").all(runId) as unknown as RevisionTaskRow[]
+    ).map(revisionTaskFromRow);
+  }
+
+  listTopologyEvents(runId: string): TopologyEventRecord[] {
+    this.assertRunExists(runId);
+    return (
+      this.db.prepare("select * from topology_events where run_id = ? order by id").all(runId) as unknown as TopologyEventRow[]
+    ).map(topologyEventFromRow);
+  }
+
+  summarizeTopology(runId: string): TopologyTrace {
+    const run = this.getRun(runId);
+    const events = this.listTopologyEvents(runId);
+    const revisionTasks = this.listRevisionTasks(runId);
+    return {
+      mode: run.topologyMode,
+      initialRationale: run.topologyRationale,
+      events,
+      revisionTasks,
+      openRevisionTasks: revisionTasks.filter((task) => task.status === "open"),
+      degradedTopologyActions: events.filter(
+        (event) => event.eventType.includes("degraded") || event.details.degraded === true
+      )
+    };
+  }
+
   summarizeRunQuality(runId: string): RunQualitySummary {
     this.assertRunExists(runId);
     return buildRunQualitySummary(this.listNotes(runId), this.listNegotiationRounds(runId));
@@ -381,6 +608,7 @@ export class Blackboard {
     const rounds = this.listNegotiationRounds(runId);
     const negotiationStatus = summarizeNegotiationStatus(rounds);
     const runQuality = buildRunQualitySummary(notes, rounds);
+    const topologyTrace = this.summarizeTopology(runId);
     const synthesis = buildSynthesisHandoff(run.topic, claims, rounds);
     const finalPackage: FinalPackage = {
       runId,
@@ -394,8 +622,9 @@ export class Blackboard {
         rounds
       },
       runQuality,
+      topologyTrace,
       synthesis,
-      markdown: renderMarkdownArtifact(run.topic, notes, sources, claims, rounds, negotiationStatus, runQuality, synthesis)
+      markdown: renderMarkdownArtifact(run.topic, notes, sources, claims, rounds, negotiationStatus, runQuality, topologyTrace, synthesis)
     };
 
     this.db
@@ -449,6 +678,18 @@ export class Blackboard {
     }));
   }
 
+  private getRevisionTask(runId: string, taskId: string): RevisionTaskRecord {
+    const row = this.db.prepare("select * from revision_tasks where run_id = ? and id = ?").get(runId, taskId) as
+      | RevisionTaskRow
+      | undefined;
+    if (!row) throw new Error(`Revision task not found: ${taskId}`);
+    return revisionTaskFromRow(row);
+  }
+
+  private assertRevisionTaskExists(runId: string, taskId: string): void {
+    this.getRevisionTask(runId, taskId);
+  }
+
   private assertRunExists(runId: string): void {
     this.getRun(runId);
   }
@@ -460,7 +701,9 @@ export class Blackboard {
         topic text not null,
         format text not null,
         agents_json text not null,
-        created_at text not null
+        created_at text not null,
+        topology_mode text not null default 'fixed',
+        topology_rationale text not null default 'Fixed specialist topology: research, negotiation, finalization.'
       );
 
       create table if not exists notes (
@@ -474,7 +717,8 @@ export class Blackboard {
         model_reason text not null default 'legacy_or_manual_write',
         model_used integer not null default 1,
         degraded integer not null default 0,
-        degradation_reasons_json text not null default '[]'
+        degradation_reasons_json text not null default '[]',
+        revision_task_id text references revision_tasks(id) on delete set null
       );
 
       create table if not exists claims (
@@ -485,7 +729,8 @@ export class Blackboard {
         evidence_note_ids_json text not null,
         confidence real not null,
         caveats_json text not null default '[]',
-        source_urls_json text not null default '[]'
+        source_urls_json text not null default '[]',
+        revision_task_id text references revision_tasks(id) on delete set null
       );
 
       create table if not exists negotiation_rounds (
@@ -510,6 +755,35 @@ export class Blackboard {
         degradation_reasons_json text not null default '[]'
       );
 
+      create table if not exists revision_tasks (
+        id text primary key,
+        run_id text not null references runs(id) on delete cascade,
+        source_round_id integer not null references negotiation_rounds(id) on delete cascade,
+        source_agent_name text not null,
+        rationale text not null,
+        assigned_agents_json text not null,
+        topic text not null,
+        status text not null,
+        thread_id text,
+        resolution_note text,
+        evidence_note_ids_json text not null default '[]',
+        created_at text not null,
+        updated_at text not null
+      );
+
+      create table if not exists topology_events (
+        id integer primary key autoincrement,
+        run_id text not null references runs(id) on delete cascade,
+        event_type text not null,
+        task_id text references revision_tasks(id) on delete set null,
+        actor text not null,
+        target_agents_json text not null default '[]',
+        thread_id text,
+        rationale text not null,
+        details_json text not null default '{}',
+        created_at text not null
+      );
+
       create table if not exists final_packages (
         run_id text primary key references runs(id) on delete cascade,
         package_json text not null,
@@ -517,13 +791,17 @@ export class Blackboard {
         created_at text not null
       );
     `);
+    this.ensureColumn("runs", "topology_mode", "text not null default 'fixed'");
+    this.ensureColumn("runs", "topology_rationale", "text not null default 'Fixed specialist topology: research, negotiation, finalization.'");
     this.ensureColumn("notes", "model_provider", "text not null default 'not_recorded'");
     this.ensureColumn("notes", "model_reason", "text not null default 'legacy_or_manual_write'");
     this.ensureColumn("notes", "model_used", "integer not null default 1");
     this.ensureColumn("notes", "degraded", "integer not null default 0");
     this.ensureColumn("notes", "degradation_reasons_json", "text not null default '[]'");
+    this.ensureColumn("notes", "revision_task_id", "text references revision_tasks(id) on delete set null");
     this.ensureColumn("claims", "caveats_json", "text not null default '[]'");
     this.ensureColumn("claims", "source_urls_json", "text not null default '[]'");
+    this.ensureColumn("claims", "revision_task_id", "text references revision_tasks(id) on delete set null");
     this.ensureColumn("negotiation_verdicts", "model_provider", "text not null default 'not_recorded'");
     this.ensureColumn("negotiation_verdicts", "model_reason", "text not null default 'legacy_or_manual_write'");
     this.ensureColumn("negotiation_verdicts", "model_used", "integer not null default 1");
@@ -547,6 +825,7 @@ export function createBlackboardTools(db: Blackboard): {
     content: string;
     sources: SourceRef[];
     execution?: Partial<AgentExecutionMetadata>;
+    revisionTaskId?: string;
   }): NoteRecord;
   readOnlyQuery(input: { runId: string; sql: string }): Record<string, unknown>[];
 } {
@@ -573,6 +852,7 @@ function renderMarkdownArtifact(
   rounds: NegotiationRoundRecord[],
   negotiationStatus: NegotiationStatus,
   runQuality: RunQualitySummary,
+  topologyTrace: TopologyTrace,
   synthesis: SynthesisHandoff
 ): string {
   const lines = [`# Research: ${topic}`, "", "## Key Claims", ""];
@@ -612,6 +892,26 @@ function renderMarkdownArtifact(
     lines.push("", "Dissent:");
     for (const verdict of runQuality.dissentingVerdicts) {
       lines.push(`- ${verdict.agentName} in round ${verdict.roundId}: ${verdict.rationale}`);
+    }
+  }
+  lines.push("", "## Topology Trace", "");
+  lines.push(`Mode: ${topologyTrace.mode}`, "");
+  lines.push(`Initial rationale: ${topologyTrace.initialRationale}`, "");
+  if (topologyTrace.revisionTasks.length === 0) {
+    lines.push("- No dynamic revision tasks were recorded.");
+  } else {
+    lines.push("Revision tasks:");
+    for (const task of topologyTrace.revisionTasks) {
+      const thread = task.threadId ? `, thread ${task.threadId}` : "";
+      lines.push(`- ${task.topic}: ${task.status} (${task.assignedAgents.join(", ")}${thread})`);
+      lines.push(`  - Rationale: ${task.rationale}`);
+      if (task.resolutionNote) lines.push(`  - Resolution: ${task.resolutionNote}`);
+    }
+  }
+  if (topologyTrace.openRevisionTasks.length > 0) {
+    lines.push("", "Open revision tasks:");
+    for (const task of topologyTrace.openRevisionTasks) {
+      lines.push(`- ${task.topic}: ${task.rationale}`);
     }
   }
   lines.push("", "## Blackboard Notes", "");
@@ -788,12 +1088,15 @@ function formatNegotiationStatus(status: NegotiationStatus): string {
 }
 
 function runFromRow(row: RunRow): RunRecord {
+  const topologyMode = row.topology_mode === "dynamic-revision" ? "dynamic-revision" : "fixed";
   return {
     id: row.id,
     topic: row.topic,
     format: row.format as ArtifactFormat,
     agents: JSON.parse(row.agents_json) as string[],
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    topologyMode,
+    topologyRationale: row.topology_rationale || defaultTopologyRationale(topologyMode)
   };
 }
 
@@ -805,7 +1108,8 @@ function noteFromRow(row: NoteRow): NoteRecord {
     angle: row.angle,
     content: row.content,
     sources: JSON.parse(row.sources_json) as SourceRef[],
-    execution: executionFromRow(row)
+    execution: executionFromRow(row),
+    ...(row.revision_task_id ? { revisionTaskId: row.revision_task_id } : {})
   };
 }
 
@@ -818,8 +1122,53 @@ function claimFromRow(row: ClaimRow): ClaimRecord {
     evidenceNoteIds: JSON.parse(row.evidence_note_ids_json) as number[],
     confidence: Number(row.confidence),
     caveats: parseJsonArray(row.caveats_json),
-    sourceUrls: parseJsonArray(row.source_urls_json)
+    sourceUrls: parseJsonArray(row.source_urls_json),
+    ...(row.revision_task_id ? { revisionTaskId: row.revision_task_id } : {})
   };
+}
+
+function revisionTaskFromRow(row: RevisionTaskRow): RevisionTaskRecord {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    sourceRoundId: Number(row.source_round_id),
+    sourceAgentName: row.source_agent_name,
+    rationale: row.rationale,
+    assignedAgents: parseJsonArray(row.assigned_agents_json),
+    topic: row.topic,
+    status: revisionTaskStatusFromRow(row.status),
+    ...(row.thread_id ? { threadId: row.thread_id } : {}),
+    ...(row.resolution_note ? { resolutionNote: row.resolution_note } : {}),
+    evidenceNoteIds: parseJsonNumberArray(row.evidence_note_ids_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function topologyEventFromRow(row: TopologyEventRow): TopologyEventRecord {
+  return {
+    id: Number(row.id),
+    runId: row.run_id,
+    eventType: row.event_type,
+    ...(row.task_id ? { taskId: row.task_id } : {}),
+    actor: row.actor,
+    targetAgents: parseJsonArray(row.target_agents_json),
+    ...(row.thread_id ? { threadId: row.thread_id } : {}),
+    rationale: row.rationale,
+    details: parseJsonObject(row.details_json),
+    createdAt: row.created_at
+  };
+}
+
+function revisionTaskStatusFromRow(value: string): RevisionTaskStatus {
+  return value === "resolved" || value === "waived" ? value : "open";
+}
+
+function defaultTopologyRationale(mode: TopologyMode): string {
+  if (mode === "dynamic-revision") {
+    return "Dynamic revision topology: preserve fixed specialists, then route revise verdicts into targeted follow-up tasks before final handoff.";
+  }
+  return "Fixed specialist topology: research, negotiation, finalization.";
 }
 
 function parseJsonArray(value: string | null | undefined): string[] {
@@ -828,12 +1177,26 @@ function parseJsonArray(value: string | null | undefined): string[] {
   return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
 }
 
+function parseJsonNumberArray(value: string | null | undefined): number[] {
+  if (!value) return [];
+  const parsed = JSON.parse(value) as unknown;
+  return Array.isArray(parsed) ? parsed.map((item) => Number(item)).filter((item) => Number.isFinite(item)) : [];
+}
+
+function parseJsonObject(value: string | null | undefined): Record<string, unknown> {
+  if (!value) return {};
+  const parsed = JSON.parse(value) as unknown;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+}
+
 interface RunRow {
   id: string;
   topic: string;
   format: string;
   agents_json: string;
   created_at: string;
+  topology_mode?: string;
+  topology_rationale?: string;
 }
 
 interface ExecutionColumns {
@@ -851,6 +1214,7 @@ interface NoteRow extends ExecutionColumns {
   angle: string;
   content: string;
   sources_json: string;
+  revision_task_id?: string | null;
 }
 
 interface ClaimRow {
@@ -862,6 +1226,7 @@ interface ClaimRow {
   confidence: number;
   caveats_json?: string;
   source_urls_json?: string;
+  revision_task_id?: string | null;
 }
 
 interface NegotiationRoundRow {
@@ -876,4 +1241,33 @@ interface VerdictRow extends ExecutionColumns {
   agent_name: string;
   stance: string;
   rationale: string;
+}
+
+interface RevisionTaskRow {
+  id: string;
+  run_id: string;
+  source_round_id: number;
+  source_agent_name: string;
+  rationale: string;
+  assigned_agents_json: string;
+  topic: string;
+  status: string;
+  thread_id?: string | null;
+  resolution_note?: string | null;
+  evidence_note_ids_json?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface TopologyEventRow {
+  id: number;
+  run_id: string;
+  event_type: string;
+  task_id?: string | null;
+  actor: string;
+  target_agents_json: string;
+  thread_id?: string | null;
+  rationale: string;
+  details_json?: string;
+  created_at: string;
 }

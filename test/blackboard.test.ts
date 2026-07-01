@@ -157,6 +157,111 @@ test("final package preserves revise status and degraded agent metadata", async 
   }
 });
 
+test("final package includes dynamic revision topology trace and resolved tasks", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-topology-"));
+  try {
+    const db = new Blackboard(path.join(dir, "runs.db"));
+    const run = db.createRun({
+      topic: "multi-agent research topology",
+      format: "markdown",
+      agents: ["systems-researcher", "quality-researcher"],
+      topologyMode: "dynamic-revision",
+      topologyRationale: "dynamic-revision resolves revise verdicts before final handoff"
+    });
+
+    const initialNote = db.addNote({
+      runId: run.id,
+      agentName: "systems-researcher",
+      angle: "systems",
+      content: "Initial note needs a follow-up pass on CLI operational constraints.",
+      sources: [{ title: "Architecture note", url: "https://example.com/topology" }]
+    });
+    db.addClaim({
+      runId: run.id,
+      agentName: "systems-researcher",
+      claim: "Dynamic topology should preserve an app-owned trace of coordination decisions.",
+      evidenceNoteIds: [initialNote.id],
+      confidence: 0.78,
+      sourceUrls: ["https://example.com/topology"]
+    });
+    const round = db.recordNegotiationRound({
+      runId: run.id,
+      phase: "debate",
+      topic: "Whether synthesis is ready",
+      transcript: "The systems agent requested a targeted revision loop.",
+      verdicts: [
+        {
+          agentName: "systems-researcher",
+          stance: "revise",
+          rationale: "Add CLI operational constraints before finalization."
+        },
+        {
+          agentName: "quality-researcher",
+          stance: "accept",
+          rationale: "The quality concerns are represented."
+        }
+      ]
+    });
+
+    const task = db.createRevisionTask({
+      runId: run.id,
+      sourceRoundId: round.id,
+      sourceAgentName: "systems-researcher",
+      rationale: "Add CLI operational constraints before finalization.",
+      assignedAgents: ["systems-researcher"],
+      topic: "Revision: CLI operational constraints"
+    });
+    db.recordTopologyEvent({
+      runId: run.id,
+      eventType: "revision_task_created",
+      taskId: task.id,
+      actor: "delve",
+      targetAgents: ["systems-researcher"],
+      rationale: task.rationale,
+      details: { sourceRoundId: round.id }
+    });
+    const revisionNote = db.addNote({
+      runId: run.id,
+      agentName: "systems-researcher",
+      angle: "revision follow-up",
+      content: "Follow-up note adds install, smoke-test, and artifact inspection constraints.",
+      sources: [],
+      revisionTaskId: task.id
+    });
+    db.addClaim({
+      runId: run.id,
+      agentName: "systems-researcher",
+      claim: "Dynamic topology should be judged by whether revision requests become inspectable follow-up work.",
+      evidenceNoteIds: [revisionNote.id],
+      confidence: 0.82,
+      revisionTaskId: task.id
+    });
+    db.resolveRevisionTask({
+      runId: run.id,
+      taskId: task.id,
+      status: "resolved",
+      resolutionNote: "systems-researcher wrote follow-up note and claim",
+      evidenceNoteIds: [revisionNote.id]
+    });
+
+    const topology = db.summarizeTopology(run.id);
+    assert.equal(topology.mode, "dynamic-revision");
+    assert.equal(topology.revisionTasks.length, 1);
+    assert.equal(topology.revisionTasks[0]?.status, "resolved");
+    assert.equal(topology.events.length, 1);
+
+    const finalPackage = db.finalizeRun(run.id);
+    assert.equal(finalPackage.topologyTrace.mode, "dynamic-revision");
+    assert.equal(finalPackage.topologyTrace.revisionTasks[0]?.status, "resolved");
+    assert.equal(finalPackage.topologyTrace.openRevisionTasks.length, 0);
+    assert.match(finalPackage.markdown, /## Topology Trace/);
+    assert.match(finalPackage.markdown, /dynamic-revision/);
+    assert.match(finalPackage.markdown, /Revision: CLI operational constraints/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("agent SQL tools expose bounded blackboard operations and reject unsafe SQL", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "delve-tools-"));
   try {

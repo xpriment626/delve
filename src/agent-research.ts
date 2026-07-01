@@ -31,6 +31,11 @@ export interface AgentNegotiationOutput {
   modelError?: string;
 }
 
+export interface AgentRevisionOutput extends AgentResearchOutput {
+  revisionTaskId: string;
+  revisionRationale: string;
+}
+
 interface RoleProfile {
   angle: string;
   lens: string;
@@ -212,6 +217,37 @@ export async function negotiateRole(input: {
     modelRoute,
     modelUsed: false,
     ...(modelResult.error ? { modelError: modelResult.error } : {})
+  };
+}
+
+export async function reviseRole(input: {
+  role: string;
+  topic: string;
+  revisionTaskId: string;
+  revisionRationale: string;
+  notes: NoteRecord[];
+  claims: ClaimRecord[];
+  env: NodeJS.ProcessEnv;
+}): Promise<AgentRevisionOutput> {
+  const revisionTopic = `${input.topic}. Targeted revision request: ${input.revisionRationale}`;
+  const research = await researchRole({
+    role: input.role,
+    topic: revisionTopic,
+    env: input.env
+  });
+  const priorContext = [
+    `${input.notes.length} prior notes`,
+    `${input.claims.length} prior claims`
+  ].join(", ");
+  return {
+    ...research,
+    revisionTaskId: input.revisionTaskId,
+    revisionRationale: input.revisionRationale,
+    angle: `revision follow-up: ${research.angle}`,
+    content:
+      `Revision task ${input.revisionTaskId}: ${input.revisionRationale}\n\n` +
+      `Context reviewed: ${priorContext}.\n\n` +
+      research.content
   };
 }
 

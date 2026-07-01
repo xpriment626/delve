@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildRoleResearchQuery, negotiateRole } from "../src/agent-research.ts";
+import { buildRoleResearchQuery, negotiateRole, reviseRole } from "../src/agent-research.ts";
 import { parseExaTextResults } from "../src/exa-research.ts";
 import { parseWaitForMentionPayload } from "../src/eve-coral-agent.ts";
 
@@ -90,4 +90,21 @@ test("heuristic negotiation remains substantive when no model route is available
   assert.equal(verdict.modelUsed, false);
   assert.equal(verdict.stance, "dissent");
   assert.match(verdict.transcript, /reviewed 1 notes, 1 claims/);
+});
+
+test("revision follow-up research carries revision task context", async () => {
+  const output = await reviseRole({
+    role: "systems-researcher",
+    topic: "dynamic topology for agentic deep research",
+    revisionTaskId: "rev-test",
+    revisionRationale: "Add CLI operational constraints before finalization.",
+    env: {},
+    notes: [],
+    claims: []
+  });
+
+  assert.equal(output.modelUsed, false);
+  assert.match(output.angle, /revision follow-up/);
+  assert.match(output.content, /rev-test/);
+  assert.match(output.content, /CLI operational constraints/);
 });

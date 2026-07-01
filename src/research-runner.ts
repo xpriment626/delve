@@ -1,7 +1,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { Blackboard, FinalizationBlockedError, type ArtifactFormat, type FinalPackage } from "./blackboard.js";
+import {
+  Blackboard,
+  FinalizationBlockedError,
+  type ArtifactFormat,
+  type FinalPackage,
+  type RevisionTaskRecord,
+  type TopologyMode
+} from "./blackboard.js";
 import { CoralClient, type CoralSessionIdentifier } from "./coral-client.js";
 import { ensureCoralServerReady, type ManagedCoralServer } from "./coral-server-process.js";
 import { CORAL_PROXY_MODEL, OPENROUTER_FALLBACK_MODEL } from "./model-routing.js";
@@ -19,6 +26,7 @@ export interface RunResearchOptions {
   coralAuthKey?: string;
   liveTimeoutMs?: number;
   coralStartTimeoutMs?: number;
+  topologyMode?: TopologyMode;
 }
 
 export interface RunResearchResult {
@@ -30,6 +38,7 @@ export interface RunResearchResult {
   markdownPath: string;
   finalPackagePath: string;
   negotiation: FinalPackage["negotiation"];
+  topology: FinalPackage["topologyTrace"];
   coralSession?: CoralSessionIdentifier;
   coralServer?: {
     autoStarted: boolean;
@@ -46,8 +55,10 @@ export async function runResearch(options: RunResearchOptions): Promise<RunResea
   const run = db.createRun({
     topic: options.topic,
     format: options.format,
-    agents: [...SPECIALIST_AGENTS]
+    agents: [...SPECIALIST_AGENTS],
+    topologyMode: options.topologyMode ?? "fixed"
   });
+  recordTopologySelected(db, run.id, run.topologyMode, run.topologyRationale);
 
   seedOfflineFixture(db, run.id);
 
@@ -108,6 +119,10 @@ export async function runResearch(options: RunResearchOptions): Promise<RunResea
     ]
   });
 
+  if (run.topologyMode === "dynamic-revision") {
+    runOfflineDynamicRevisionLoop(db, run.id);
+  }
+
   const finalPackage = db.finalizeRun(run.id);
   const { markdownPath, finalPackagePath } = await writeFinalArtifacts(options.outDir, run.id, finalPackage);
 
@@ -119,7 +134,8 @@ export async function runResearch(options: RunResearchOptions): Promise<RunResea
     finalizationBlockedBeforeNegotiation,
     markdownPath,
     finalPackagePath,
-    negotiation: finalPackage.negotiation
+    negotiation: finalPackage.negotiation,
+    topology: finalPackage.topologyTrace
   };
 }
 
@@ -138,8 +154,10 @@ async function runLiveResearch(options: RunResearchOptions): Promise<RunResearch
   const run = db.createRun({
     topic: options.topic,
     format: options.format,
-    agents: [...SPECIALIST_AGENTS]
+    agents: [...SPECIALIST_AGENTS],
+    topologyMode: options.topologyMode ?? "fixed"
   });
+  recordTopologySelected(db, run.id, run.topologyMode, run.topologyRationale);
   const session: CoralSessionIdentifier = {
     namespace: `delve-${run.id.slice(0, 8)}`,
     sessionId: ""
@@ -227,6 +245,18 @@ async function runLiveResearch(options: RunResearchOptions): Promise<RunResearch
       timeoutMs
     );
 
+    if (run.topologyMode === "dynamic-revision") {
+      await runLiveDynamicRevisionLoop({
+        db,
+        runId: run.id,
+        topic: run.topic,
+        dbPath: options.dbPath,
+        client,
+        session,
+        timeoutMs
+      });
+    }
+
     const finalPackage = db.finalizeRun(run.id);
     const { markdownPath, finalPackagePath } = await writeFinalArtifacts(options.outDir, run.id, finalPackage);
     return {
@@ -238,6 +268,7 @@ async function runLiveResearch(options: RunResearchOptions): Promise<RunResearch
       markdownPath,
       finalPackagePath,
       negotiation: finalPackage.negotiation,
+      topology: finalPackage.topologyTrace,
       coralSession: session,
       coralServer: {
         autoStarted: coralServer.started
@@ -336,6 +367,188 @@ function seedOfflineFixture(db: Blackboard, runId: string): void {
   });
 }
 
+function recordTopologySelected(db: Blackboard, runId: string, mode: TopologyMode, rationale: string): void {
+  db.recordTopologyEvent({
+    runId,
+    eventType: "topology_selected",
+    actor: "delve",
+    rationale,
+    details: { mode }
+  });
+}
+
+function createRevisionTasksFromVerdicts(db: Blackboard, runId: string): RevisionTaskRecord[] {
+  const tasks: RevisionTaskRecord[] = [];
+  for (const verdict of db.summarizeRunQuality(runId).revisionRequests) {
+    const task = db.createRevisionTask({
+      runId,
+      sourceRoundId: verdict.roundId,
+      sourceAgentName: verdict.agentName,
+      rationale: verdict.rationale,
+      assignedAgents: [verdict.agentName],
+      topic: `Revision: ${verdict.topic}`
+    });
+    db.recordTopologyEvent({
+      runId,
+      eventType: "revision_task_created",
+      taskId: task.id,
+      actor: "delve",
+      targetAgents: task.assignedAgents,
+      rationale: task.rationale,
+      details: {
+        sourceRoundId: verdict.roundId,
+        sourceAgentName: verdict.agentName,
+        stance: verdict.stance
+      }
+    });
+    tasks.push(task);
+  }
+  if (tasks.length === 0) {
+    db.recordTopologyEvent({
+      runId,
+      eventType: "revision_scan_completed",
+      actor: "delve",
+      rationale: "No revise verdicts were recorded, so dynamic-revision had no follow-up tasks.",
+      details: { revisionTaskCount: 0 }
+    });
+  }
+  return tasks;
+}
+
+function runOfflineDynamicRevisionLoop(db: Blackboard, runId: string): void {
+  const tasks = createRevisionTasksFromVerdicts(db, runId);
+  for (const task of tasks) {
+    const note = db.addNote({
+      runId,
+      agentName: task.assignedAgents[0] ?? task.sourceAgentName,
+      angle: "revision follow-up",
+      content:
+        `Dynamic-revision follow-up for ${task.topic}. The revision request was: ${task.rationale} ` +
+        "The final artifact should carry this request as inspected follow-up work rather than burying it as a caveat.",
+      sources: [],
+      revisionTaskId: task.id
+    });
+    db.addClaim({
+      runId,
+      agentName: note.agentName,
+      claim: "Dynamic revision requests should become inspectable follow-up work before Delve finalizes a research package.",
+      evidenceNoteIds: [note.id],
+      confidence: 0.72,
+      caveats: ["Offline fixture follow-up is deterministic and should not be treated as live research."],
+      revisionTaskId: task.id
+    });
+    db.recordTopologyEvent({
+      runId,
+      eventType: "revision_followup_recorded",
+      taskId: task.id,
+      actor: note.agentName,
+      targetAgents: task.assignedAgents,
+      rationale: "Offline fixture wrote deterministic follow-up evidence for the revision task.",
+      details: { noteId: note.id }
+    });
+    const resolved = db.resolveRevisionTask({
+      runId,
+      taskId: task.id,
+      status: "resolved",
+      resolutionNote: `${note.agentName} wrote deterministic offline follow-up note ${note.id}.`,
+      evidenceNoteIds: [note.id]
+    });
+    db.recordTopologyEvent({
+      runId,
+      eventType: "revision_task_resolved",
+      taskId: task.id,
+      actor: "delve",
+      targetAgents: resolved.assignedAgents,
+      rationale: resolved.resolutionNote ?? "Revision task resolved.",
+      details: { evidenceNoteIds: resolved.evidenceNoteIds }
+    });
+  }
+}
+
+async function runLiveDynamicRevisionLoop(input: {
+  db: Blackboard;
+  runId: string;
+  topic: string;
+  dbPath: string;
+  client: CoralClient;
+  session: CoralSessionIdentifier;
+  timeoutMs: number;
+}): Promise<void> {
+  const tasks = createRevisionTasksFromVerdicts(input.db, input.runId);
+  for (const task of tasks) {
+    const actor = puppetActorForTargets(task.assignedAgents);
+    const thread = await input.client.createThread({
+      ...input.session,
+      actor,
+      threadName: task.topic,
+      participantNames: task.assignedAgents
+    });
+    const taskWithThread = input.db.attachRevisionTaskThread({
+      runId: input.runId,
+      taskId: task.id,
+      threadId: thread.id
+    });
+    input.db.recordTopologyEvent({
+      runId: input.runId,
+      eventType: "revision_thread_created",
+      taskId: task.id,
+      actor,
+      targetAgents: taskWithThread.assignedAgents,
+      threadId: thread.id,
+      rationale: `Opened topic-specific Coral thread for ${task.topic}.`,
+      details: { threadName: task.topic }
+    });
+    await sendPhaseToAgents(input.client, input.session, thread.id, {
+      phase: "revise",
+      topic: input.topic,
+      runId: input.runId,
+      dbPath: input.dbPath,
+      revisionTaskId: task.id,
+      revisionRationale: task.rationale
+    }, task.assignedAgents);
+    input.db.recordTopologyEvent({
+      runId: input.runId,
+      eventType: "revision_agents_mentioned",
+      taskId: task.id,
+      actor,
+      targetAgents: taskWithThread.assignedAgents,
+      threadId: thread.id,
+      rationale: "Mentioned assigned agent(s) with targeted revision prompt.",
+      details: { revisionTaskId: task.id }
+    });
+    await waitForBlackboard(
+      () => input.db.listNotes(input.runId).some((note) => note.revisionTaskId === task.id),
+      `revision follow-up for ${task.topic}`,
+      input.timeoutMs
+    );
+    const evidenceNoteIds = input.db.listNotes(input.runId)
+      .filter((note) => note.revisionTaskId === task.id)
+      .map((note) => note.id);
+    const resolved = input.db.resolveRevisionTask({
+      runId: input.runId,
+      taskId: task.id,
+      status: "resolved",
+      resolutionNote: `Assigned agent(s) wrote ${evidenceNoteIds.length} follow-up note(s).`,
+      evidenceNoteIds,
+      threadId: thread.id
+    });
+    input.db.recordTopologyEvent({
+      runId: input.runId,
+      eventType: "revision_task_resolved",
+      taskId: task.id,
+      actor: "delve",
+      targetAgents: resolved.assignedAgents,
+      threadId: thread.id,
+      rationale: resolved.resolutionNote ?? "Revision task resolved.",
+      details: { evidenceNoteIds }
+    });
+  }
+}
+
+function puppetActorForTargets(targetAgents: readonly string[]): string {
+  return SPECIALIST_AGENTS.find((agent) => !targetAgents.includes(agent)) ?? SPECIALIST_AGENTS[0];
+}
+
 async function writeFinalArtifacts(
   outDir: string,
   runId: string,
@@ -354,13 +567,21 @@ async function sendPhaseToAgents(
   client: CoralClient,
   session: CoralSessionIdentifier,
   threadId: string,
-  payload: { phase: "research" | "negotiate"; topic: string; runId: string; dbPath: string }
+  payload: {
+    phase: "research" | "negotiate" | "revise";
+    topic: string;
+    runId: string;
+    dbPath: string;
+    revisionTaskId?: string;
+    revisionRationale?: string;
+  },
+  agents: readonly string[] = SPECIALIST_AGENTS
 ): Promise<void> {
   await Promise.all(
-    SPECIALIST_AGENTS.map((agentName, index) =>
+    agents.map((agentName) =>
       client.sendMessage({
         ...session,
-        actor: SPECIALIST_AGENTS[(index + SPECIALIST_AGENTS.length - 1) % SPECIALIST_AGENTS.length],
+        actor: puppetActorForTargets([agentName]),
         threadId,
         content: JSON.stringify(payload),
         mentions: [agentName]

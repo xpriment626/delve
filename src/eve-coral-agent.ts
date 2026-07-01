@@ -9,7 +9,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { Command } from "commander";
 
 import { Blackboard, type AgentExecutionMetadata } from "./blackboard.js";
-import { negotiateRole, researchRole } from "./agent-research.js";
+import { negotiateRole, researchRole, reviseRole } from "./agent-research.js";
 
 export interface MentionPayload {
   text: string;
@@ -21,7 +21,9 @@ export interface ResearchTaskMessage {
   runId: string;
   topic: string;
   dbPath?: string;
-  phase?: "research" | "negotiate";
+  phase?: "research" | "negotiate" | "revise";
+  revisionTaskId?: string;
+  revisionRationale?: string;
 }
 
 export function parseWaitForMentionPayload(payload: string): MentionPayload {
@@ -130,6 +132,60 @@ async function handleTaskMessage(
     };
   }
 
+  if (task.phase === "revise") {
+    if (!task.revisionTaskId || !task.revisionRationale) {
+      throw new Error(`Revision task message must include revisionTaskId and revisionRationale: ${JSON.stringify(task)}`);
+    }
+    const notes = db.listNotes(task.runId);
+    const claims = db.listClaims(task.runId);
+    const revision = await reviseRole({
+      role,
+      topic: task.topic,
+      revisionTaskId: task.revisionTaskId,
+      revisionRationale: task.revisionRationale,
+      notes,
+      claims,
+      env: process.env
+    });
+    const note = db.addNote({
+      runId: task.runId,
+      agentName: role,
+      angle: revision.angle,
+      content: revision.content,
+      sources: revision.sources,
+      revisionTaskId: task.revisionTaskId,
+      execution: executionFromAgentOutput(revision)
+    });
+    const revisionClaims = revision.claims.map((claim) =>
+      db.addClaim({
+        runId: task.runId,
+        agentName: role,
+        evidenceNoteIds: [note.id],
+        claim: claim.claim,
+        confidence: claim.confidence,
+        caveats: claim.caveats,
+        sourceUrls: claim.sourceUrls,
+        revisionTaskId: task.revisionTaskId
+      })
+    );
+    return {
+      type: "revision_followup_written",
+      payload: {
+        revisionTaskId: task.revisionTaskId,
+        noteId: note.id,
+        claimIds: revisionClaims.map((claim) => claim.id),
+        angle: note.angle,
+        sourceCount: note.sources.length,
+        searchQuery: revision.searchQuery,
+        modelProvider: revision.modelRoute.provider,
+        modelReason: revision.modelRoute.reason,
+        modelUsed: revision.modelUsed,
+        degraded: isAgentOutputDegraded(revision),
+        degradationReasons: degradationReasonsForAgentOutput(revision)
+      }
+    };
+  }
+
   const research = await researchRole({
     role,
     topic: task.topic,
@@ -210,7 +266,14 @@ function degradationReasonsForAgentOutput(input: {
 function parseResearchTaskMessage(text: string): ResearchTaskMessage {
   const parsed = JSON.parse(text) as Partial<ResearchTaskMessage>;
   if (!parsed.runId || !parsed.topic) throw new Error(`Research task message must include runId and topic: ${text}`);
-  return { runId: parsed.runId, topic: parsed.topic, dbPath: parsed.dbPath, phase: parsed.phase };
+  return {
+    runId: parsed.runId,
+    topic: parsed.topic,
+    dbPath: parsed.dbPath,
+    phase: parsed.phase,
+    revisionTaskId: parsed.revisionTaskId,
+    revisionRationale: parsed.revisionRationale
+  };
 }
 
 function extractText(result: unknown): string {

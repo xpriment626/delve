@@ -5,6 +5,7 @@ import { Command, CommanderError } from "commander";
 import { config as loadEnv } from "dotenv";
 
 import { createDoctorReport } from "./doctor.js";
+import type { TopologyMode } from "./blackboard.js";
 
 const PROJECT_ROOT = resolveProjectRoot(import.meta.dirname);
 loadEnv({ path: path.join(PROJECT_ROOT, ".env"), quiet: true });
@@ -67,6 +68,7 @@ research
   .option("--auth-key <key>", "Coral server bearer key for live mode", process.env.CORAL_SERVER_AUTH_KEY ?? "dev")
   .option("--live-timeout-ms <ms>", "live Coral wait timeout in milliseconds", "600000")
   .option("--coral-start-timeout-ms <ms>", "Coral auto-start readiness timeout in milliseconds", "120000")
+  .option("--topology <mode>", "coordination topology mode: fixed or dynamic-revision", "fixed")
   .option("--offline-fixture", "run deterministic local fixture instead of live Coral")
   .action(
     async (options: {
@@ -78,9 +80,11 @@ research
       authKey: string;
       liveTimeoutMs: string;
       coralStartTimeoutMs: string;
+      topology: string;
       offlineFixture?: boolean;
     }) => {
       const { runResearch } = await import("./research-runner.js");
+      const topologyMode = parseTopologyMode(options.topology);
       const result = await runResearch({
         topic: options.topic,
         format: options.format,
@@ -90,7 +94,8 @@ research
         coralUrl: options.coralUrl,
         coralAuthKey: options.authKey,
         liveTimeoutMs: Number(options.liveTimeoutMs),
-        coralStartTimeoutMs: Number(options.coralStartTimeoutMs)
+        coralStartTimeoutMs: Number(options.coralStartTimeoutMs),
+        topologyMode
       });
       output(result);
     }
@@ -146,6 +151,16 @@ blackboard
   .action(async (options: { run: string; db: string }) => {
     const { Blackboard } = await import("./blackboard.js");
     output(new Blackboard(path.resolve(options.db)).summarizeRunQuality(options.run));
+  });
+
+blackboard
+  .command("topology")
+  .description("Inspect topology trace events and revision task state for a run.")
+  .requiredOption("--run <runId>", "run id")
+  .option("--db <path>", "SQLite blackboard path", DEFAULT_DB)
+  .action(async (options: { run: string; db: string }) => {
+    const { Blackboard } = await import("./blackboard.js");
+    output(new Blackboard(path.resolve(options.db)).summarizeTopology(options.run));
   });
 
 program
@@ -215,6 +230,11 @@ function parseMaybeJson(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+function parseTopologyMode(value: string): TopologyMode {
+  if (value === "fixed" || value === "dynamic-revision") return value;
+  throw new Error(`Unsupported topology mode: ${value}`);
 }
 
 function resolveProjectRoot(moduleDir: string): string {

@@ -157,3 +157,91 @@ test("offline fixture research run records blackboard negotiation and writes mar
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("offline dynamic-revision run records inspectable topology trace", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-cli-topology-"));
+  try {
+    const dbPath = path.join(dir, "blackboard.db");
+    const outDir = path.join(dir, "artifacts");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "src/cli.ts",
+        "--json",
+        "research",
+        "run",
+        "--topic",
+        "dynamic topology for agentic deep research",
+        "--format",
+        "markdown",
+        "--db",
+        dbPath,
+        "--out",
+        outDir,
+        "--offline-fixture",
+        "--topology",
+        "dynamic-revision"
+      ],
+      { cwd: ROOT, encoding: "utf8", env: process.env }
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as {
+      ok: boolean;
+      runId: string;
+      finalPackagePath: string;
+      topology: { mode: string; revisionTasks: unknown[]; openRevisionTasks: unknown[] };
+    };
+    assert.equal(payload.ok, true);
+    assert.equal(payload.topology.mode, "dynamic-revision");
+    assert.equal(payload.topology.revisionTasks.length, 1);
+    assert.equal(payload.topology.openRevisionTasks.length, 0);
+
+    const finalPackage = JSON.parse(await readFile(payload.finalPackagePath, "utf8")) as {
+      topologyTrace: {
+        mode: string;
+        events: unknown[];
+        revisionTasks: Array<{ status: string; assignedAgents: string[] }>;
+        openRevisionTasks: unknown[];
+      };
+      markdown: string;
+    };
+    assert.equal(finalPackage.topologyTrace.mode, "dynamic-revision");
+    assert.equal(finalPackage.topologyTrace.revisionTasks[0]?.status, "resolved");
+    assert.deepEqual(finalPackage.topologyTrace.revisionTasks[0]?.assignedAgents, ["systems-researcher"]);
+    assert.equal(finalPackage.topologyTrace.openRevisionTasks.length, 0);
+    assert.match(finalPackage.markdown, /## Topology Trace/);
+
+    const topologyResult = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "src/cli.ts",
+        "--json",
+        "blackboard",
+        "topology",
+        "--run",
+        payload.runId,
+        "--db",
+        dbPath
+      ],
+      { cwd: ROOT, encoding: "utf8", env: process.env }
+    );
+    assert.equal(topologyResult.status, 0, topologyResult.stderr);
+    const topology = JSON.parse(topologyResult.stdout) as {
+      mode: string;
+      events: unknown[];
+      revisionTasks: unknown[];
+      openRevisionTasks: unknown[];
+    };
+    assert.equal(topology.mode, "dynamic-revision");
+    assert.equal(topology.events.length > 0, true);
+    assert.equal(topology.revisionTasks.length, 1);
+    assert.equal(topology.openRevisionTasks.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

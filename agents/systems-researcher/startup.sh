@@ -2,4 +2,4 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
-exec npx -y tsx src/eve-coral-agent.ts --role systems-researcher --max-messages 2
+exec npx -y tsx src/eve-coral-agent.ts --role systems-researcher --max-messages 3
