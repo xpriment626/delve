@@ -1,0 +1,10 @@
+[auth]
+keys = ["dev"]
+
+[registry]
+includeCoralHomeAgents = false
+localAgents = [
+  "/Users/bambozlor/Lab/Research-Desk/deep-research-yolo/agents/latency-researcher",
+  "/Users/bambozlor/Lab/Research-Desk/deep-research-yolo/agents/systems-researcher",
+  "/Users/bambozlor/Lab/Research-Desk/deep-research-yolo/agents/quality-researcher"
+]

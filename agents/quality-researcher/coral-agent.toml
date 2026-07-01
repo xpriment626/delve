@@ -1,0 +1,46 @@
+edition = 4
+
+[agent]
+name = "quality-researcher"
+version = "0.1.0"
+description = "Eve-backed specialist for quality, evaluation, robustness, user impact, safety, and risk tradeoff research on arbitrary topics."
+summary = "Quality specialist for deep research."
+readme = "Executable Eve-backed Coral agent. Uses Coral coordination, app-owned SQLite blackboard tools, Exa MCP research, and negotiation before finalization."
+
+[agent.license]
+type = "text"
+text = "MIT"
+
+[options]
+MODEL_NAME = { type = "string", default = "gpt-5.4-nano" }
+OPENROUTER_FALLBACK_MODEL = { type = "string", default = "deepseek/deepseek-v4-pro" }
+BLACKBOARD_DB_PATH = { type = "string", default = ".delve/blackboard.db" }
+RESEARCH_ROLE = { type = "string", default = "quality-researcher" }
+
+[options.CORAL_API_KEY]
+type = "string"
+required = false
+secret = true
+transport = "env"
+
+[options.OPENROUTER_API_KEY]
+type = "string"
+required = false
+secret = true
+transport = "env"
+
+[options.EXA_API_KEY]
+type = "string"
+required = false
+secret = true
+transport = "env"
+
+[[llm.proxies]]
+name = "CORAL_MAIN"
+format = "OpenAI"
+models = ["gpt-5.4-nano"]
+
+[runtimes.executable]
+path = "bash"
+arguments = ["startup.sh"]
+transport = "streamable_http"
