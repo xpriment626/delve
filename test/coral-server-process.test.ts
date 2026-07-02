@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { buildCoralServerEnv, buildCoralServerStartArgs, canAutoStartCoralUrl } from "../src/coral-server-process.ts";
+import {
+  buildCoralServerEnv,
+  buildCoralServerStartArgs,
+  buildRuntimeCoralConfig,
+  canAutoStartCoralUrl,
+  writeRuntimeCoralConfig
+} from "../src/coral-server-process.ts";
 
 test("Coral auto-start is limited to the packaged local server URL", () => {
   assert.equal(canAutoStartCoralUrl("http://localhost:5555"), true);
@@ -30,15 +38,35 @@ test("Coral auto-start forwards explicit alternate loopback ports", () => {
   ]);
 });
 
-test("Coral server env points at repo config and maps Coral API key for Cloud proxy", () => {
+test("runtime Coral config uses absolute packaged agent paths", () => {
   const projectRoot = "/tmp/delve-project";
-  const env = buildCoralServerEnv(projectRoot, {
-    CORAL_API_KEY: "coral-secret",
-    CLOUD_API_KEY: ""
-  });
+  const config = buildRuntimeCoralConfig(projectRoot);
 
-  assert.equal(env.CONFIG_FILE_PATH, path.join(projectRoot, "coral-config.toml"));
-  assert.equal(env.CLOUD_API_KEY, "coral-secret");
+  assert.match(config, /\[registry\]/);
+  assert.match(config, /"\/tmp\/delve-project\/agents\/latency-researcher"/);
+  assert.match(config, /"\/tmp\/delve-project\/agents\/systems-researcher"/);
+  assert.match(config, /"\/tmp\/delve-project\/agents\/quality-researcher"/);
+  assert.doesNotMatch(config, /"agents\//);
+});
+
+test("Coral server env points at generated runtime config and maps Coral API key for Cloud proxy", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-coral-config-"));
+  const projectRoot = "/tmp/delve-project";
+  try {
+    const configPath = await writeRuntimeCoralConfig(projectRoot, { DELVE_HOME: dir });
+    const env = buildCoralServerEnv(projectRoot, {
+      CORAL_API_KEY: "coral-secret",
+      CLOUD_API_KEY: ""
+    }, configPath);
+
+    assert.equal(env.CONFIG_FILE_PATH, path.join(dir, "coral-config.runtime.toml"));
+    assert.equal(env.CLOUD_API_KEY, "coral-secret");
+    assert.match(await readFile(configPath, "utf8"), /"\/tmp\/delve-project\/agents\/latency-researcher"/);
+    assert.equal((await stat(dir)).mode & 0o777, 0o700);
+    assert.equal((await stat(configPath)).mode & 0o777, 0o600);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("existing Cloud API key is preserved when starting Coral", () => {

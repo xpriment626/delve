@@ -1,4 +1,6 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 
@@ -17,6 +19,8 @@ export interface EnsureCoralServerOptions {
   log?: (message: string) => void;
 }
 
+const SPECIALIST_AGENT_NAMES = ["latency-researcher", "systems-researcher", "quality-researcher"] as const;
+
 export async function ensureCoralServerReady(options: EnsureCoralServerOptions): Promise<ManagedCoralServer> {
   if (await probeCoralServer(options.coralUrl)) {
     return { started: false, stop: async () => {} };
@@ -26,9 +30,10 @@ export async function ensureCoralServerReady(options: EnsureCoralServerOptions):
     throw new Error(`Coral server is not reachable at ${options.coralUrl}; auto-start only supports explicit local HTTP ports`);
   }
 
+  const configPath = await writeRuntimeCoralConfig(options.projectRoot, options.env);
   const child = spawn("npx", buildCoralServerStartArgs(options.coralUrl), {
     cwd: options.projectRoot,
-    env: buildCoralServerEnv(options.projectRoot, options.env),
+    env: buildCoralServerEnv(options.projectRoot, options.env, configPath),
     stdio: ["ignore", "pipe", "pipe"]
   });
   const log = options.log ?? (() => {});
@@ -54,15 +59,44 @@ export async function ensureCoralServerReady(options: EnsureCoralServerOptions):
   }
 }
 
-export function buildCoralServerEnv(projectRoot: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function buildCoralServerEnv(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv,
+  configPath = path.join(projectRoot, "coral-config.toml")
+): NodeJS.ProcessEnv {
   const nextEnv: NodeJS.ProcessEnv = {
     ...env,
-    CONFIG_FILE_PATH: path.join(projectRoot, "coral-config.toml")
+    CONFIG_FILE_PATH: configPath
   };
   if (!nextEnv.CLOUD_API_KEY && nextEnv.CORAL_API_KEY) {
     nextEnv.CLOUD_API_KEY = nextEnv.CORAL_API_KEY;
   }
   return nextEnv;
+}
+
+export function buildRuntimeCoralConfig(projectRoot: string): string {
+  const agentPaths = SPECIALIST_AGENT_NAMES.map((agentName) => path.resolve(projectRoot, "agents", agentName));
+  return [
+    "[auth]",
+    'keys = ["dev"]',
+    "",
+    "[registry]",
+    "includeCoralHomeAgents = false",
+    "localAgents = [",
+    ...agentPaths.map((agentPath) => `  ${JSON.stringify(agentPath)},`),
+    "]",
+    ""
+  ].join("\n");
+}
+
+export async function writeRuntimeCoralConfig(projectRoot: string, env: NodeJS.ProcessEnv): Promise<string> {
+  const delveHome = resolveDelveHome(env);
+  const configPath = path.join(delveHome, "coral-config.runtime.toml");
+  await mkdir(delveHome, { recursive: true, mode: 0o700 });
+  await chmod(delveHome, 0o700);
+  await writeFile(configPath, buildRuntimeCoralConfig(projectRoot), { mode: 0o600 });
+  await chmod(configPath, 0o600);
+  return configPath;
 }
 
 export function canAutoStartCoralUrl(coralUrl: string): boolean {
@@ -133,6 +167,10 @@ async function stopCoralServer(child: CoralServerChild): Promise<void> {
 
 function ensureTrailingSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
+}
+
+function resolveDelveHome(env: NodeJS.ProcessEnv): string {
+  return env.DELVE_HOME && env.DELVE_HOME.length > 0 ? env.DELVE_HOME : path.join(homedir(), ".delve");
 }
 
 function sleep(ms: number): Promise<void> {
