@@ -1,6 +1,6 @@
 {
   "name": "@itsshadowai/delve",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Coral-backed multi-agent research CLI with a SQLite blackboard and Delve-style negotiation.",
   "license": "MIT",
   "author": "itsshadowai",
