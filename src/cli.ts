@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { config as loadEnv } from "dotenv";
 
+import { getCodexSkillStatus, installCodexSkill, type CodexSkillStatus, type InstallCodexSkillResult } from "./codex-skill.js";
 import { createDoctorReport } from "./doctor.js";
+import type { DoctorReport } from "./doctor.js";
 import type { TopologyMode } from "./blackboard.js";
 
 const PROJECT_ROOT = resolveProjectRoot(import.meta.dirname);
@@ -24,7 +27,7 @@ program
   .name("delve")
   .description("Multi-agent deep research CLI using Coral coordination, Eve agents, and a SQLite blackboard.")
   .option("--json", "emit stable JSON to stdout")
-  .version("0.1.0");
+  .version(readPackageVersion(PROJECT_ROOT));
 
 program
   .command("doctor")
@@ -46,19 +49,42 @@ program
   .description("Print local setup paths and config expectations.")
   .option("--db <path>", "SQLite blackboard path", DEFAULT_DB)
   .option("--out <path>", "artifact output directory", DEFAULT_OUT)
-  .action((options: { db: string; out: string }) => {
-    output({
-      ok: true,
-      dbPath: path.resolve(options.db),
-      outDir: path.resolve(options.out),
-      coralConfig: path.join(PROJECT_ROOT, "coral-config.toml"),
-      env: {
-        required: ["EXA_API_KEY", "CORAL_API_KEY or OPENROUTER_API_KEY"],
-        recommended: ["CORAL_API_KEY", "OPENROUTER_API_KEY"],
-        optional: ["CORAL_SERVER_URL", "CORAL_SERVER_AUTH_KEY", "tectonic or another LaTeX compiler"]
-      },
-      startCommand: "delve research run auto-starts local Coral for loopback --coral-url values"
+  .option("--coral-url <url>", "Coral server base URL", DEFAULT_CORAL_URL)
+  .action(async (options: { db: string; out: string; coralUrl: string }) => {
+    const report = await createInitReport(options);
+    outputWithHuman(report, formatInitReport(report));
+  });
+
+const codex = program.command("codex").description("Manage Codex integration helpers.");
+
+codex
+  .command("skill-status")
+  .description("Inspect whether the packaged Delve Codex skill is installed.")
+  .option("--target <path>", "target skill directory; defaults to ${CODEX_HOME:-~/.codex}/skills/delve")
+  .action(async (options: { target?: string }) => {
+    const status = await getCodexSkillStatus({
+      projectRoot: PROJECT_ROOT,
+      env: process.env,
+      targetPath: options.target
     });
+    outputWithHuman(status, formatSkillStatus(status));
+  });
+
+codex
+  .command("install-skill")
+  .description("Install or update the packaged Delve Codex skill.")
+  .option("--target <path>", "target skill directory; defaults to ${CODEX_HOME:-~/.codex}/skills/delve")
+  .option("--force", "overwrite an existing non-matching skill")
+  .option("--dry-run", "show what would be copied without writing files")
+  .action(async (options: { target?: string; force?: boolean; dryRun?: boolean }) => {
+    const result = await installCodexSkill({
+      projectRoot: PROJECT_ROOT,
+      env: process.env,
+      targetPath: options.target,
+      force: options.force,
+      dryRun: options.dryRun
+    });
+    outputWithHuman(result, formatInstallSkillResult(result));
   });
 
 const research = program.command("research").description("Run and inspect research workflows.");
@@ -199,16 +225,19 @@ program.exitOverride();
 try {
   await program.parseAsync(process.argv);
 } catch (error) {
-  if (error instanceof CommanderError && error.code === "commander.helpDisplayed") {
+  if (
+    error instanceof CommanderError &&
+    (error.code === "commander.helpDisplayed" || error.code === "commander.version")
+  ) {
     process.exitCode = 0;
   } else {
-  const message = error instanceof Error ? error.message : String(error);
-  if (wantsJson()) {
-    console.log(JSON.stringify({ ok: false, error: message }, null, 2));
-  } else {
-    console.error(message);
-  }
-  process.exitCode = 1;
+    const message = error instanceof Error ? error.message : String(error);
+    if (wantsJson()) {
+      console.log(JSON.stringify({ ok: false, error: message }, null, 2));
+    } else {
+      console.error(message);
+    }
+    process.exitCode = 1;
   }
 }
 
@@ -219,6 +248,14 @@ function output(value: unknown): void {
     console.log(value);
   } else {
     console.log(JSON.stringify(value, null, 2));
+  }
+}
+
+function outputWithHuman(value: unknown, human: string): void {
+  if ((program.opts<GlobalOptions>().json ?? false) || wantsJson()) {
+    console.log(JSON.stringify(value, null, 2));
+  } else {
+    console.log(human);
   }
 }
 
@@ -241,6 +278,129 @@ function parseMaybeJson(text: string): unknown {
 function parseTopologyMode(value: string): TopologyMode {
   if (value === "fixed" || value === "dynamic-revision") return value;
   throw new Error(`Unsupported topology mode: ${value}`);
+}
+
+interface InitReport {
+  ok: boolean;
+  packageRoot: string;
+  workDir: string;
+  dbPath: string;
+  outDir: string;
+  coralConfig: string;
+  doctor: DoctorReport;
+  codexSkill: CodexSkillStatus;
+  nextSteps: string[];
+}
+
+async function createInitReport(options: { db: string; out: string; coralUrl: string }): Promise<InitReport> {
+  const dbPath = path.resolve(options.db);
+  const outDir = path.resolve(options.out);
+  const doctor = await createDoctorReport({
+    coralUrl: options.coralUrl,
+    dbPath,
+    projectRoot: PROJECT_ROOT,
+    env: process.env
+  });
+  const codexSkill = await getCodexSkillStatus({
+    projectRoot: PROJECT_ROOT,
+    env: process.env
+  });
+  const nextSteps = buildInitNextSteps(doctor, codexSkill);
+  return {
+    ok: doctor.ok && codexSkill.sourceExists,
+    packageRoot: PROJECT_ROOT,
+    workDir: DEFAULT_WORK_ROOT,
+    dbPath,
+    outDir,
+    coralConfig: path.join(PROJECT_ROOT, "coral-config.toml"),
+    doctor,
+    codexSkill,
+    nextSteps
+  };
+}
+
+function buildInitNextSteps(doctor: DoctorReport, codexSkill: CodexSkillStatus): string[] {
+  const steps: string[] = [];
+  if (!codexSkill.installed || !codexSkill.matchesPackagedSkill) {
+    steps.push("delve codex install-skill");
+  }
+  if (!doctor.env.EXA_API_KEY.present) {
+    steps.push("export EXA_API_KEY=...");
+  }
+  if (!doctor.env.CORAL_API_KEY.present && !doctor.env.OPENROUTER_API_KEY.present) {
+    steps.push("export CORAL_API_KEY=... # or export OPENROUTER_API_KEY=...");
+  }
+  steps.push("delve --json doctor");
+  steps.push("delve --json research run --topic \"your topic\" --format markdown --db .delve/blackboard.db --out artifacts");
+  return steps;
+}
+
+function formatInitReport(report: InitReport): string {
+  const lines = [
+    "Delve setup",
+    "",
+    `Package root: ${report.packageRoot}`,
+    `Working directory: ${report.workDir}`,
+    `Blackboard DB: ${report.dbPath}`,
+    `Artifacts: ${report.outDir}`,
+    `Coral config: ${report.coralConfig}`,
+    "",
+    "Required credentials:",
+    `  ${statusMark(report.doctor.env.EXA_API_KEY.present)} EXA_API_KEY`,
+    `  ${statusMark(report.doctor.env.CORAL_API_KEY.present || report.doctor.env.OPENROUTER_API_KEY.present)} CORAL_API_KEY or OPENROUTER_API_KEY`,
+    "",
+    "Optional tooling:",
+    `  ${statusMark(report.doctor.tooling.latex.available)} LaTeX compiler (tectonic, pdflatex, or latexmk)`,
+    "",
+    "Codex skill:",
+    `  ${statusMark(report.codexSkill.installed && report.codexSkill.matchesPackagedSkill)} ${report.codexSkill.targetPath}`,
+    report.codexSkill.installed && !report.codexSkill.matchesPackagedSkill
+      ? "  Existing skill differs from the packaged skill; run `delve codex install-skill --force` to replace it."
+      : "",
+    "",
+    "Coral:",
+    `  ${report.doctor.coral.reachable ? "[reachable]" : "[auto-start]"} ${report.doctor.coral.url}`,
+    "  Live research runs auto-start local loopback Coral URLs when needed.",
+    "",
+    "Next steps:",
+    ...report.nextSteps.map((step, index) => `  ${index + 1}. ${step}`)
+  ].filter((line) => line !== "");
+  return lines.join("\n");
+}
+
+function formatSkillStatus(status: CodexSkillStatus): string {
+  return [
+    "Delve Codex skill",
+    `Source: ${status.sourcePath}`,
+    `Target: ${status.targetPath}`,
+    `Source exists: ${status.sourceExists ? "yes" : "no"}`,
+    `Installed: ${status.installed ? "yes" : "no"}`,
+    `Matches package: ${status.matchesPackagedSkill ? "yes" : "no"}`
+  ].join("\n");
+}
+
+function formatInstallSkillResult(result: InstallCodexSkillResult): string {
+  return [
+    "Delve Codex skill",
+    `Action: ${result.action}`,
+    `Source: ${result.sourcePath}`,
+    `Target: ${result.targetPath}`,
+    `Files: ${result.files.join(", ")}`,
+    result.dryRun ? "No files were written because --dry-run was set." : "Done."
+  ].join("\n");
+}
+
+function statusMark(ok: boolean): string {
+  return ok ? "[ok]" : "[missing]";
+}
+
+function readPackageVersion(projectRoot: string): string {
+  try {
+    const packageJson = JSON.parse(readFileSync(path.join(projectRoot, "package.json"), "utf8")) as { version?: string };
+    return packageJson.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
 }
 
 function resolveProjectRoot(moduleDir: string): string {

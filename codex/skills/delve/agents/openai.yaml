@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delve"
+  short_description: "Run the Delve multi-agent research CLI."
+  default_prompt: "Use Delve to run or inspect a Coral-backed multi-agent research workflow."

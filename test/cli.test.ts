@@ -1,12 +1,25 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
+const PACKAGE_VERSION = (JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { version: string }).version;
+
+test("--version prints package version and exits successfully", () => {
+  const result = spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", "--version"], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: process.env
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), PACKAGE_VERSION);
+  assert.equal(result.stderr.trim(), "");
+});
 
 test("doctor --json reports readiness without leaking secret values", async () => {
   const secret = "sk-test-secret-that-must-not-leak";
@@ -37,6 +50,94 @@ test("doctor --json reports readiness without leaking secret values", async () =
   assert.equal(report.env.OPENROUTER_API_KEY.present, true);
   assert.equal(report.env.EXA_API_KEY.present, true);
   assert.equal(report.coral.reachable, false);
+});
+
+test("init prints onboarding with Codex skill install guidance", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-init-"));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "src/cli.ts",
+        "init",
+        "--db",
+        path.join(dir, "blackboard.db"),
+        "--out",
+        path.join(dir, "artifacts"),
+        "--coral-url",
+        "http://127.0.0.1:9"
+      ],
+      {
+        cwd: ROOT,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEX_HOME: path.join(dir, "codex-home")
+        }
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Delve setup/);
+    assert.match(result.stdout, /delve codex install-skill/);
+    assert.match(result.stdout, /codex-home\/skills\/delve/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("codex install-skill copies packaged skill and protects existing edits", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-skill-"));
+  try {
+    const target = path.join(dir, "skills", "delve");
+    const dryRun = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "src/cli.ts", "--json", "codex", "install-skill", "--target", target, "--dry-run"],
+      { cwd: ROOT, encoding: "utf8", env: process.env }
+    );
+    assert.equal(dryRun.status, 0, dryRun.stderr);
+    assert.equal(JSON.parse(dryRun.stdout).action, "dry-run-install");
+    assert.equal(existsSync(target), false);
+
+    const install = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "src/cli.ts", "--json", "codex", "install-skill", "--target", target],
+      { cwd: ROOT, encoding: "utf8", env: process.env }
+    );
+    assert.equal(install.status, 0, install.stderr);
+    assert.equal(JSON.parse(install.stdout).action, "install");
+    assert.equal(existsSync(path.join(target, "SKILL.md")), true);
+    assert.equal(existsSync(path.join(target, "agents", "openai.yaml")), true);
+
+    const alreadyInstalled = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "src/cli.ts", "--json", "codex", "install-skill", "--target", target],
+      { cwd: ROOT, encoding: "utf8", env: process.env }
+    );
+    assert.equal(alreadyInstalled.status, 0, alreadyInstalled.stderr);
+    assert.equal(JSON.parse(alreadyInstalled.stdout).action, "already-installed");
+
+    await writeFile(path.join(target, "SKILL.md"), "locally changed\n", "utf8");
+    const blockedOverwrite = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "src/cli.ts", "--json", "codex", "install-skill", "--target", target],
+      { cwd: ROOT, encoding: "utf8", env: process.env }
+    );
+    assert.equal(blockedOverwrite.status, 1);
+    assert.match(JSON.parse(blockedOverwrite.stdout).error, /--force/);
+
+    const forced = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "src/cli.ts", "--json", "codex", "install-skill", "--target", target, "--force"],
+      { cwd: ROOT, encoding: "utf8", env: process.env }
+    );
+    assert.equal(forced.status, 0, forced.stderr);
+    assert.equal(JSON.parse(forced.stdout).action, "overwrite");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("offline fixture research run records blackboard negotiation and writes markdown artifact", async () => {

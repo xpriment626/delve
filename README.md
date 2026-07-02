@@ -55,9 +55,14 @@ CORAL_SERVER_AUTH_KEY=dev
 From the project directory where you want outputs:
 
 ```bash
-delve --json doctor
 delve init
+delve codex install-skill
+delve --json doctor
 ```
+
+`delve init` prints the local setup checklist: expected credentials, output paths, optional LaTeX tooling, Coral reachability, and Codex skill status.
+
+`delve codex install-skill` copies the packaged Delve skill into `${CODEX_HOME:-~/.codex}/skills/delve`. It does not run automatically during `npm install`; the write into Codex's skill directory is explicit. Use `--dry-run` to preview and `--force` to replace an existing non-matching skill.
 
 Run a live research pass:
 
@@ -103,6 +108,27 @@ delve --json final --file artifacts/<run-id>/final-package.json
 ```
 
 `blackboard quality` is the main audit command. It summarizes degraded agent work, revision requests, and dissenting verdicts.
+
+## Codex Skill
+
+Install or update the packaged Codex skill:
+
+```bash
+delve codex install-skill
+```
+
+Check where the skill would be installed:
+
+```bash
+delve codex skill-status
+delve codex install-skill --dry-run
+```
+
+The target defaults to `${CODEX_HOME:-~/.codex}/skills/delve`. To install somewhere else:
+
+```bash
+delve codex install-skill --target /path/to/skills/delve
+```
 
 ## Offline Smoke
 
