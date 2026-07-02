@@ -10,8 +10,9 @@ import type { TopologyMode } from "./blackboard.js";
 const PROJECT_ROOT = resolveProjectRoot(import.meta.dirname);
 loadEnv({ path: path.join(PROJECT_ROOT, ".env"), quiet: true });
 loadEnv({ quiet: true });
-const DEFAULT_DB = path.join(PROJECT_ROOT, ".delve", "blackboard.db");
-const DEFAULT_OUT = path.join(PROJECT_ROOT, "artifacts");
+const DEFAULT_WORK_ROOT = process.cwd();
+const DEFAULT_DB = path.join(DEFAULT_WORK_ROOT, ".delve", "blackboard.db");
+const DEFAULT_OUT = path.join(DEFAULT_WORK_ROOT, "artifacts");
 const DEFAULT_CORAL_URL = process.env.CORAL_SERVER_URL ?? "http://localhost:5555";
 
 interface GlobalOptions {
@@ -51,7 +52,12 @@ program
       dbPath: path.resolve(options.db),
       outDir: path.resolve(options.out),
       coralConfig: path.join(PROJECT_ROOT, "coral-config.toml"),
-      startCommand: "npm run coral:start"
+      env: {
+        required: ["EXA_API_KEY", "CORAL_API_KEY or OPENROUTER_API_KEY"],
+        recommended: ["CORAL_API_KEY", "OPENROUTER_API_KEY"],
+        optional: ["CORAL_SERVER_URL", "CORAL_SERVER_AUTH_KEY", "tectonic or another LaTeX compiler"]
+      },
+      startCommand: "delve research run auto-starts local Coral for loopback --coral-url values"
     });
   });
 

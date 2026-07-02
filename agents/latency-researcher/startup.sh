@@ -2,4 +2,4 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
-exec npx -y tsx src/eve-coral-agent.ts --role latency-researcher --max-messages 3
+exec node dist/src/eve-coral-agent.js --role latency-researcher --max-messages 3

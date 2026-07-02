@@ -23,7 +23,7 @@ test("project Coral config registers local Eve-backed agent manifests", async ()
     assert.match(manifest, /transport = "streamable_http"/);
     assert.match(manifest, /arguments = \["startup\.sh"/);
     const startup = await readFile(path.join(ROOT, "agents", agent, "startup.sh"), "utf8");
-    assert.match(startup, /src\/eve-coral-agent\.ts/);
+    assert.match(startup, /dist\/src\/eve-coral-agent\.js/);
     assert.match(startup, new RegExp(`--role ${agent}`));
   }
 });

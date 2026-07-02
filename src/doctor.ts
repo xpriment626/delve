@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import path from "node:path";
 
@@ -32,6 +33,18 @@ export interface DoctorReport {
     path: string;
     mode: "configured";
   };
+  tooling: {
+    node: string;
+    latex: {
+      optional: true;
+      available: boolean;
+      commands: {
+        tectonic: boolean;
+        pdflatex: boolean;
+        latexmk: boolean;
+      };
+    };
+  };
   agents: {
     configPath: string;
     expected: string[];
@@ -58,9 +71,15 @@ export async function createDoctorReport(options: DoctorOptions): Promise<Doctor
     coralApiKeyPresent: env.CORAL_API_KEY.present,
     openRouterApiKeyPresent: env.OPENROUTER_API_KEY.present
   });
+  const latexCommands = {
+    tectonic: await commandExists("tectonic"),
+    pdflatex: await commandExists("pdflatex"),
+    latexmk: await commandExists("latexmk")
+  };
+  const modelConfigured = env.CORAL_API_KEY.present || env.OPENROUTER_API_KEY.present;
 
   return {
-    ok: env.OPENROUTER_API_KEY.present && env.EXA_API_KEY.present && manifestsPresent,
+    ok: env.EXA_API_KEY.present && modelConfigured && manifestsPresent,
     env,
     coral: {
       reachable: coral.reachable,
@@ -77,6 +96,14 @@ export async function createDoctorReport(options: DoctorOptions): Promise<Doctor
       path: options.dbPath,
       mode: "configured"
     },
+    tooling: {
+      node: process.version,
+      latex: {
+        optional: true,
+        available: latexCommands.tectonic || latexCommands.pdflatex || latexCommands.latexmk,
+        commands: latexCommands
+      }
+    },
     agents: {
       configPath,
       expected,
@@ -84,6 +111,14 @@ export async function createDoctorReport(options: DoctorOptions): Promise<Doctor
     },
     model
   };
+}
+
+async function commandExists(command: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const child = spawn(command, ["--version"], { stdio: "ignore" });
+    child.once("error", () => resolve(false));
+    child.once("exit", (code) => resolve(code === 0));
+  });
 }
 
 async function probeCoral(schemaUrl: string): Promise<{ reachable: boolean; error?: string }> {

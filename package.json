@@ -1,10 +1,41 @@
 {
-  "name": "delve",
+  "name": "@itsshadowai/delve",
   "version": "0.1.0",
-  "private": true,
+  "description": "Coral-backed multi-agent research CLI with a SQLite blackboard and Delve-style negotiation.",
+  "license": "MIT",
+  "author": "itsshadowai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xpriment626/delve.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xpriment626/delve/issues"
+  },
+  "homepage": "https://github.com/xpriment626/delve#readme",
+  "keywords": [
+    "agents",
+    "coral",
+    "research",
+    "cli",
+    "blackboard",
+    "codex"
+  ],
   "type": "module",
   "bin": {
-    "delve": "./dist/src/cli.js"
+    "delve": "dist/src/cli.js"
+  },
+  "files": [
+    "dist/",
+    "agent/",
+    "agents/",
+    "scripts/",
+    "coral-config.toml",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -13,7 +44,9 @@
     "dev": "tsx src/cli.ts",
     "eve:dev": "eve dev",
     "coral:start": "node scripts/start-coral.mjs",
-    "install-local": "npm run build && node scripts/install-local.mjs"
+    "install-local": "npm run build && node scripts/install-local.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run check && npm test && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.21.0",
