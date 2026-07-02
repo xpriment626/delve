@@ -40,6 +40,21 @@ export CORAL_API_KEY="..."
 export OPENROUTER_API_KEY="..."
 ```
 
+Or store credentials through Delve without echoing them in the terminal:
+
+```bash
+delve auth set exa
+delve auth set coral
+# or
+delve auth set openrouter
+```
+
+`delve auth set` prompts with terminal echo disabled and writes `${DELVE_HOME:-~/.delve}/config.env` with file mode `0600`. Shell environment variables and a project-local `.env` override stored defaults. For automation, pipe a token through stdin:
+
+```bash
+printf '%s\n' "$OPENROUTER_API_KEY" | delve auth set openrouter --stdin
+```
+
 Or create a project-local `.env` in the directory where you run `delve`:
 
 ```bash
@@ -57,10 +72,11 @@ From the project directory where you want outputs:
 ```bash
 delve init
 delve codex install-skill
+delve auth set coral # or: delve auth set openrouter
 delve --json doctor
 ```
 
-`delve init` prints the local setup checklist: expected credentials, output paths, optional LaTeX tooling, Coral reachability, and Codex skill status.
+`delve init` creates the blackboard and artifact directories it reports, then prints the local setup checklist: expected credentials, output paths, optional LaTeX tooling, Coral reachability, and Codex skill status.
 
 `delve codex install-skill` copies the packaged Delve skill into `${CODEX_HOME:-~/.codex}/skills/delve`. It does not run automatically during `npm install`; the write into Codex's skill directory is explicit. Use `--dry-run` to preview and `--force` to replace an existing non-matching skill.
 

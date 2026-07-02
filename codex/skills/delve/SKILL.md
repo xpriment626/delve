@@ -24,6 +24,18 @@ delve codex install-skill
 
 Use `delve init` for the human-readable onboarding checklist. It reports expected env vars, output paths, optional LaTeX tooling, and whether this Codex skill is installed.
 
+For local credential setup, prefer the non-echoing auth helper instead of asking the user to paste secrets into a shell command:
+
+```bash
+delve auth set exa
+delve auth set coral
+# or
+delve auth set openrouter
+delve auth status
+```
+
+`delve auth set` writes `${DELVE_HOME:-~/.delve}/config.env` with file mode `0600`. Use `--stdin` only for automation where the token is already in an environment variable.
+
 ## Run Research
 
 Prefer project-local outputs unless the user specifies a different directory:

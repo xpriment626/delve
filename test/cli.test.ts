@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +8,8 @@ import test from "node:test";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const PACKAGE_VERSION = (JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { version: string }).version;
+const TSX_LOADER = path.join(ROOT, "node_modules", "tsx", "dist", "loader.mjs");
+const CLI_PATH = path.join(ROOT, "src", "cli.ts");
 
 test("--version prints package version and exits successfully", () => {
   const result = spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", "--version"], {
@@ -59,8 +61,8 @@ test("init prints onboarding with Codex skill install guidance", async () => {
       process.execPath,
       [
         "--import",
-        "tsx",
-        "src/cli.ts",
+        TSX_LOADER,
+        CLI_PATH,
         "init",
         "--db",
         path.join(dir, "blackboard.db"),
@@ -83,6 +85,100 @@ test("init prints onboarding with Codex skill install guidance", async () => {
     assert.match(result.stdout, /Delve setup/);
     assert.match(result.stdout, /delve codex install-skill/);
     assert.match(result.stdout, /codex-home\/skills\/delve/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("init prepares working directories for the default blackboard and artifacts", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-init-paths-"));
+  try {
+    const dbPath = path.join(dir, ".delve", "blackboard.db");
+    const outDir = path.join(dir, "artifacts");
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        TSX_LOADER,
+        CLI_PATH,
+        "init",
+        "--db",
+        dbPath,
+        "--out",
+        outDir,
+        "--coral-url",
+        "http://127.0.0.1:9"
+      ],
+      {
+        cwd: dir,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEX_HOME: path.join(dir, "codex-home")
+        }
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal((await stat(path.dirname(dbPath))).isDirectory(), true);
+    assert.equal((await stat(outDir)).isDirectory(), true);
+    assert.match(result.stdout, /directory ready/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("auth set stores token from stdin in private Delve config used by doctor", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-auth-"));
+  const secret = "sk-test-openrouter-config-secret";
+  try {
+    const env = {
+      ...process.env,
+      DELVE_HOME: path.join(dir, ".delve"),
+      EXA_API_KEY: "exa-test-secret"
+    };
+    delete env.CORAL_API_KEY;
+    delete env.OPENROUTER_API_KEY;
+
+    const setResult = spawnSync(
+      process.execPath,
+      ["--import", TSX_LOADER, CLI_PATH, "--json", "auth", "set", "openrouter", "--stdin"],
+      {
+        cwd: dir,
+        encoding: "utf8",
+        input: `${secret}\n`,
+        env
+      }
+    );
+
+    assert.equal(setResult.status, 0, setResult.stderr);
+    assert.equal(setResult.stdout.includes(secret), false);
+    const setPayload = JSON.parse(setResult.stdout) as { key: string; configPath: string };
+    assert.equal(setPayload.key, "OPENROUTER_API_KEY");
+    assert.equal(setPayload.configPath, path.join(dir, ".delve", "config.env"));
+
+    const configStat = await stat(setPayload.configPath);
+    assert.equal(configStat.mode & 0o777, 0o600);
+    const configText = await readFile(setPayload.configPath, "utf8");
+    assert.match(configText, /OPENROUTER_API_KEY=/);
+    assert.match(configText, new RegExp(secret));
+
+    const doctor = spawnSync(
+      process.execPath,
+      ["--import", TSX_LOADER, CLI_PATH, "--json", "doctor", "--coral-url", "http://127.0.0.1:9"],
+      {
+        cwd: dir,
+        encoding: "utf8",
+        env
+      }
+    );
+
+    assert.equal(doctor.status, 0, doctor.stderr);
+    assert.equal(doctor.stdout.includes(secret), false);
+    const report = JSON.parse(doctor.stdout) as {
+      env: { OPENROUTER_API_KEY: { present: boolean; source: string } };
+    };
+    assert.equal(report.env.OPENROUTER_API_KEY.present, true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -1,18 +1,20 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { config as loadEnv } from "dotenv";
 
+import { authConfigPath, getAuthStatus, parseAuthProvider, setAuthToken, AUTH_ENV_BY_PROVIDER, type SetAuthTokenResult, type AuthStatus } from "./auth-config.js";
 import { getCodexSkillStatus, installCodexSkill, type CodexSkillStatus, type InstallCodexSkillResult } from "./codex-skill.js";
 import { createDoctorReport } from "./doctor.js";
 import type { DoctorReport } from "./doctor.js";
 import type { TopologyMode } from "./blackboard.js";
 
 const PROJECT_ROOT = resolveProjectRoot(import.meta.dirname);
-loadEnv({ path: path.join(PROJECT_ROOT, ".env"), quiet: true });
 loadEnv({ quiet: true });
+loadEnv({ path: authConfigPath(process.env), quiet: true });
+loadEnv({ path: path.join(PROJECT_ROOT, ".env"), quiet: true });
 const DEFAULT_WORK_ROOT = process.cwd();
 const DEFAULT_DB = path.join(DEFAULT_WORK_ROOT, ".delve", "blackboard.db");
 const DEFAULT_OUT = path.join(DEFAULT_WORK_ROOT, "artifacts");
@@ -46,13 +48,45 @@ program
 
 program
   .command("init")
-  .description("Print local setup paths and config expectations.")
+  .description("Prepare local output directories and print setup expectations.")
   .option("--db <path>", "SQLite blackboard path", DEFAULT_DB)
   .option("--out <path>", "artifact output directory", DEFAULT_OUT)
   .option("--coral-url <url>", "Coral server base URL", DEFAULT_CORAL_URL)
   .action(async (options: { db: string; out: string; coralUrl: string }) => {
     const report = await createInitReport(options);
     outputWithHuman(report, formatInitReport(report));
+  });
+
+const auth = program.command("auth").description("Manage Delve credentials in a private local config file.");
+
+auth
+  .command("set")
+  .description("Store a credential without putting the secret in shell history.")
+  .argument("<provider>", "credential provider: coral, openrouter, or exa")
+  .option("--stdin", "read the token from stdin instead of a hidden prompt")
+  .option("--config <path>", "credential config path; defaults to ${DELVE_HOME:-~/.delve}/config.env")
+  .action(async (providerValue: string, options: { stdin?: boolean; config?: string }) => {
+    const provider = parseAuthProvider(providerValue);
+    const token = options.stdin
+      ? await readSecretFromStdin()
+      : await promptHidden(`Enter ${AUTH_ENV_BY_PROVIDER[provider]}: `);
+    const result = await setAuthToken({
+      provider,
+      token,
+      env: process.env,
+      configPath: options.config
+    });
+    process.env[result.key] = token.trim();
+    outputWithHuman(result, formatAuthSetResult(result));
+  });
+
+auth
+  .command("status")
+  .description("Show which Delve credentials are configured without printing values.")
+  .option("--config <path>", "credential config path; defaults to ${DELVE_HOME:-~/.delve}/config.env")
+  .action(async (options: { config?: string }) => {
+    const status = await getAuthStatus(process.env, options.config);
+    outputWithHuman(status, formatAuthStatus(status));
   });
 
 const codex = program.command("codex").description("Manage Codex integration helpers.");
@@ -286,6 +320,11 @@ interface InitReport {
   workDir: string;
   dbPath: string;
   outDir: string;
+  preparedPaths: {
+    blackboardDir: string;
+    artifactsDir: string;
+  };
+  credentialConfig: string;
   coralConfig: string;
   doctor: DoctorReport;
   codexSkill: CodexSkillStatus;
@@ -295,6 +334,7 @@ interface InitReport {
 async function createInitReport(options: { db: string; out: string; coralUrl: string }): Promise<InitReport> {
   const dbPath = path.resolve(options.db);
   const outDir = path.resolve(options.out);
+  const preparedPaths = await prepareInitPaths(dbPath, outDir);
   const doctor = await createDoctorReport({
     coralUrl: options.coralUrl,
     dbPath,
@@ -312,6 +352,8 @@ async function createInitReport(options: { db: string; out: string; coralUrl: st
     workDir: DEFAULT_WORK_ROOT,
     dbPath,
     outDir,
+    preparedPaths,
+    credentialConfig: authConfigPath(process.env),
     coralConfig: path.join(PROJECT_ROOT, "coral-config.toml"),
     doctor,
     codexSkill,
@@ -325,10 +367,10 @@ function buildInitNextSteps(doctor: DoctorReport, codexSkill: CodexSkillStatus):
     steps.push("delve codex install-skill");
   }
   if (!doctor.env.EXA_API_KEY.present) {
-    steps.push("export EXA_API_KEY=...");
+    steps.push("delve auth set exa");
   }
   if (!doctor.env.CORAL_API_KEY.present && !doctor.env.OPENROUTER_API_KEY.present) {
-    steps.push("export CORAL_API_KEY=... # or export OPENROUTER_API_KEY=...");
+    steps.push("delve auth set coral # or: delve auth set openrouter");
   }
   steps.push("delve --json doctor");
   steps.push("delve --json research run --topic \"your topic\" --format markdown --db .delve/blackboard.db --out artifacts");
@@ -341,8 +383,9 @@ function formatInitReport(report: InitReport): string {
     "",
     `Package root: ${report.packageRoot}`,
     `Working directory: ${report.workDir}`,
-    `Blackboard DB: ${report.dbPath}`,
-    `Artifacts: ${report.outDir}`,
+    `Blackboard DB: ${report.dbPath} (directory ready)`,
+    `Artifacts: ${report.outDir} (directory ready)`,
+    `Credential config: ${report.credentialConfig}`,
     `Coral config: ${report.coralConfig}`,
     "",
     "Required credentials:",
@@ -392,6 +435,95 @@ function formatInstallSkillResult(result: InstallCodexSkillResult): string {
 
 function statusMark(ok: boolean): string {
   return ok ? "[ok]" : "[missing]";
+}
+
+async function prepareInitPaths(dbPath: string, outDir: string): Promise<InitReport["preparedPaths"]> {
+  const blackboardDir = path.dirname(dbPath);
+  await mkdir(blackboardDir, { recursive: true });
+  await mkdir(outDir, { recursive: true });
+  return {
+    blackboardDir,
+    artifactsDir: outDir
+  };
+}
+
+function formatAuthSetResult(result: SetAuthTokenResult): string {
+  return [
+    "Delve auth",
+    `Stored: ${result.key}`,
+    `Config: ${result.configPath}`,
+    "Secret value was not printed."
+  ].join("\n");
+}
+
+function formatAuthStatus(status: AuthStatus): string {
+  return [
+    "Delve auth",
+    `Config: ${status.configPath}`,
+    `  ${statusMark(status.keys.EXA_API_KEY.present)} EXA_API_KEY`,
+    `  ${statusMark(status.keys.CORAL_API_KEY.present)} CORAL_API_KEY`,
+    `  ${statusMark(status.keys.OPENROUTER_API_KEY.present)} OPENROUTER_API_KEY`
+  ].join("\n");
+}
+
+async function readSecretFromStdin(): Promise<string> {
+  let value = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) {
+    value += chunk;
+  }
+  return value.trim();
+}
+
+async function promptHidden(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) {
+    throw new Error("No interactive TTY available; pass --stdin to read the token from stdin");
+  }
+
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const stderr = process.stderr;
+    const wasRaw = stdin.isRaw;
+    let value = "";
+
+    const cleanup = () => {
+      stdin.off("data", onData);
+      stdin.setRawMode(wasRaw);
+      stdin.pause();
+    };
+
+    const finish = () => {
+      stderr.write("\n");
+      cleanup();
+      resolve(value);
+    };
+
+    const onData = (chunk: Buffer | string) => {
+      for (const char of chunk.toString("utf8")) {
+        if (char === "\u0003") {
+          stderr.write("\n");
+          cleanup();
+          reject(new Error("cancelled"));
+          return;
+        }
+        if (char === "\r" || char === "\n") {
+          finish();
+          return;
+        }
+        if (char === "\u007f" || char === "\b") {
+          value = value.slice(0, -1);
+          continue;
+        }
+        value += char;
+      }
+    };
+
+    stderr.write(prompt);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    stdin.on("data", onData);
+  });
 }
 
 function readPackageVersion(projectRoot: string): string {
