@@ -19,6 +19,7 @@ checkpoint/
 
 # Internal notes and reference material
 docs/
+live-trials/
 
 # Logs and temporary files
 *.log
