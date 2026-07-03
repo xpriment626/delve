@@ -34,7 +34,6 @@ test("doctor --json reports readiness without leaking secret values", async () =
       env: {
         ...process.env,
         CORAL_API_KEY: secret,
-        OPENROUTER_API_KEY: secret,
         EXA_API_KEY: secret
       }
     }
@@ -49,7 +48,6 @@ test("doctor --json reports readiness without leaking secret values", async () =
     coral: { reachable: boolean };
   };
   assert.equal(report.env.CORAL_API_KEY.present, true);
-  assert.equal(report.env.OPENROUTER_API_KEY.present, true);
   assert.equal(report.env.EXA_API_KEY.present, true);
   assert.equal(report.coral.reachable, false);
 });
@@ -128,9 +126,9 @@ test("init prepares working directories for the default blackboard and artifacts
   }
 });
 
-test("auth set stores token from stdin in private Delve config used by doctor", async () => {
+test("auth set stores Coral token from stdin in private Delve config used by doctor", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "delve-auth-"));
-  const secret = "sk-test-openrouter-config-secret";
+  const secret = "coral-test-config-secret";
   try {
     const env = {
       ...process.env,
@@ -138,11 +136,9 @@ test("auth set stores token from stdin in private Delve config used by doctor", 
       EXA_API_KEY: "exa-test-secret"
     };
     delete env.CORAL_API_KEY;
-    delete env.OPENROUTER_API_KEY;
-
     const setResult = spawnSync(
       process.execPath,
-      ["--import", TSX_LOADER, CLI_PATH, "--json", "auth", "set", "openrouter", "--stdin"],
+      ["--import", TSX_LOADER, CLI_PATH, "--json", "auth", "set", "coral", "--stdin"],
       {
         cwd: dir,
         encoding: "utf8",
@@ -154,13 +150,13 @@ test("auth set stores token from stdin in private Delve config used by doctor", 
     assert.equal(setResult.status, 0, setResult.stderr);
     assert.equal(setResult.stdout.includes(secret), false);
     const setPayload = JSON.parse(setResult.stdout) as { key: string; configPath: string };
-    assert.equal(setPayload.key, "OPENROUTER_API_KEY");
+    assert.equal(setPayload.key, "CORAL_API_KEY");
     assert.equal(setPayload.configPath, path.join(dir, ".delve", "config.env"));
 
     const configStat = await stat(setPayload.configPath);
     assert.equal(configStat.mode & 0o777, 0o600);
     const configText = await readFile(setPayload.configPath, "utf8");
-    assert.match(configText, /OPENROUTER_API_KEY=/);
+    assert.match(configText, /CORAL_API_KEY=/);
     assert.match(configText, new RegExp(secret));
 
     const doctor = spawnSync(
@@ -176,9 +172,88 @@ test("auth set stores token from stdin in private Delve config used by doctor", 
     assert.equal(doctor.status, 0, doctor.stderr);
     assert.equal(doctor.stdout.includes(secret), false);
     const report = JSON.parse(doctor.stdout) as {
-      env: { OPENROUTER_API_KEY: { present: boolean; source: string } };
+      env: { CORAL_API_KEY: { present: boolean; source: string } };
     };
-    assert.equal(report.env.OPENROUTER_API_KEY.present, true);
+    assert.equal(report.env.CORAL_API_KEY.present, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("set auth coral aliases secure credential storage", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-set-auth-"));
+  const secret = "coral-test-alias-secret";
+  try {
+    const env = {
+      ...process.env,
+      DELVE_HOME: path.join(dir, ".delve")
+    };
+    delete env.CORAL_API_KEY;
+
+    const result = spawnSync(
+      process.execPath,
+      ["--import", TSX_LOADER, CLI_PATH, "--json", "set", "auth", "coral", "--stdin"],
+      {
+        cwd: dir,
+        encoding: "utf8",
+        input: `${secret}\n`,
+        env
+      }
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.includes(secret), false);
+    const payload = JSON.parse(result.stdout) as { key: string; provider: string; configPath: string };
+    assert.equal(payload.provider, "coral");
+    assert.equal(payload.key, "CORAL_API_KEY");
+    assert.equal(payload.configPath, path.join(dir, ".delve", "config.env"));
+    const configText = await readFile(payload.configPath, "utf8");
+    assert.match(configText, /CORAL_API_KEY=/);
+    assert.match(configText, new RegExp(secret));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("model set and list use private Delve config with deepseek default", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-model-"));
+  try {
+    const env = {
+      ...process.env,
+      DELVE_HOME: path.join(dir, ".delve")
+    };
+    delete env.DELVE_MODEL;
+    delete env.MODEL_NAME;
+    const initialList = spawnSync(process.execPath, ["--import", TSX_LOADER, CLI_PATH, "--json", "model", "list"], {
+      cwd: dir,
+      encoding: "utf8",
+      env
+    });
+    assert.equal(initialList.status, 0, initialList.stderr);
+    const initialPayload = JSON.parse(initialList.stdout) as { models: string[]; selectedModel: string };
+    assert.equal(initialPayload.selectedModel, "deepseek-v4-pro");
+    assert.equal(initialPayload.models.includes("deepseek-v4-pro"), true);
+
+    const set = spawnSync(process.execPath, ["--import", TSX_LOADER, CLI_PATH, "--json", "model", "set", "claude-sonnet-4-0"], {
+      cwd: dir,
+      encoding: "utf8",
+      env
+    });
+    assert.equal(set.status, 0, set.stderr);
+    const setPayload = JSON.parse(set.stdout) as { model: string; configPath: string };
+    assert.equal(setPayload.model, "claude-sonnet-4-0");
+    assert.equal(setPayload.configPath, path.join(dir, ".delve", "config.env"));
+    assert.match(await readFile(setPayload.configPath, "utf8"), /DELVE_MODEL="claude-sonnet-4-0"/);
+
+    const status = spawnSync(process.execPath, ["--import", TSX_LOADER, CLI_PATH, "--json", "model", "status"], {
+      cwd: dir,
+      encoding: "utf8",
+      env
+    });
+    assert.equal(status.status, 0, status.stderr);
+    const statusPayload = JSON.parse(status.stdout) as { model: string; source: string };
+    assert.equal(statusPayload.model, "claude-sonnet-4-0");
+    assert.equal(statusPayload.source, "config");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

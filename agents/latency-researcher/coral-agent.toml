@@ -12,18 +12,11 @@ type = "text"
 text = "MIT"
 
 [options]
-MODEL_NAME = { type = "string", default = "gpt-5.4-nano" }
-OPENROUTER_FALLBACK_MODEL = { type = "string", default = "deepseek/deepseek-v4-pro" }
+MODEL_NAME = { type = "string", default = "deepseek-v4-pro" }
 BLACKBOARD_DB_PATH = { type = "string", default = ".delve/blackboard.db" }
 RESEARCH_ROLE = { type = "string", default = "latency-researcher" }
 
 [options.CORAL_API_KEY]
-type = "string"
-required = false
-secret = true
-transport = "env"
-
-[options.OPENROUTER_API_KEY]
 type = "string"
 required = false
 secret = true
@@ -38,7 +31,7 @@ transport = "env"
 [[llm.proxies]]
 name = "CORAL_MAIN"
 format = "OpenAI"
-models = ["gpt-5.4-nano"]
+model = "deepseek-v4-pro"
 
 [runtimes.executable]
 path = "bash"

@@ -3,15 +3,15 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { parse as parseEnv } from "dotenv";
 
-export type AuthProvider = "coral" | "openrouter" | "exa";
+export type AuthProvider = "coral" | "exa";
 
-export const AUTH_ENV_BY_PROVIDER: Record<AuthProvider, "CORAL_API_KEY" | "OPENROUTER_API_KEY" | "EXA_API_KEY"> = {
+export const AUTH_ENV_BY_PROVIDER: Record<AuthProvider, "CORAL_API_KEY" | "EXA_API_KEY"> = {
   coral: "CORAL_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
   exa: "EXA_API_KEY"
 };
 
-const AUTH_KEYS = ["EXA_API_KEY", "CORAL_API_KEY", "OPENROUTER_API_KEY"] as const;
+const AUTH_KEYS = ["EXA_API_KEY", "CORAL_API_KEY"] as const;
+const LOCAL_CONFIG_KEYS = ["CORAL_API_KEY", "DELVE_MODEL", "EXA_API_KEY"] as const;
 
 export interface SetAuthTokenResult {
   ok: true;
@@ -26,8 +26,8 @@ export interface AuthStatus {
 }
 
 export function parseAuthProvider(value: string): AuthProvider {
-  if (value === "coral" || value === "openrouter" || value === "exa") return value;
-  throw new Error("provider must be one of: coral, openrouter, exa");
+  if (value === "coral" || value === "exa") return value;
+  throw new Error("provider must be one of: coral, exa");
 }
 
 export function resolveDelveHome(env: NodeJS.ProcessEnv): string {
@@ -72,8 +72,7 @@ export async function getAuthStatus(env: NodeJS.ProcessEnv, configPath?: string)
     configPath: resolvedPath,
     keys: {
       EXA_API_KEY: { present: hasValue(env.EXA_API_KEY) || hasValue(config.EXA_API_KEY) },
-      CORAL_API_KEY: { present: hasValue(env.CORAL_API_KEY) || hasValue(config.CORAL_API_KEY) },
-      OPENROUTER_API_KEY: { present: hasValue(env.OPENROUTER_API_KEY) || hasValue(config.OPENROUTER_API_KEY) }
+      CORAL_API_KEY: { present: hasValue(env.CORAL_API_KEY) || hasValue(config.CORAL_API_KEY) }
     }
   };
 }
@@ -88,7 +87,7 @@ async function readAuthConfig(configPath: string): Promise<Record<string, string
 }
 
 function serializeAuthConfig(values: Record<string, string>): string {
-  const lines = AUTH_KEYS.filter((key) => hasValue(values[key])).map((key) => `${key}=${quoteEnvValue(values[key])}`);
+  const lines = LOCAL_CONFIG_KEYS.filter((key) => hasValue(values[key])).map((key) => `${key}=${quoteEnvValue(values[key])}`);
   return `${lines.join("\n")}\n`;
 }
 

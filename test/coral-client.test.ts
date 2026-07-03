@@ -9,8 +9,7 @@ test("buildLocalSessionRequest creates executable local Coral agents with blackb
     topic: "optimisation techniques for real-time voice agents",
     dbPath: "/tmp/delve/blackboard.db",
     agents: ["latency-researcher", "systems-researcher"],
-    modelName: "gpt-5.4-nano",
-    fallbackModel: "deepseek/deepseek-v4-pro",
+    modelName: "deepseek-v4-pro",
     ttlMs: 1234,
     holdAfterExitMs: 5678
   }) as {
@@ -38,22 +37,25 @@ test("buildLocalSessionRequest creates executable local Coral agents with blackb
     type: "string",
     value: "/tmp/delve/blackboard.db"
   });
+  assert.deepEqual(payload.agentGraphRequest.agents[0].options.MODEL_NAME, {
+    type: "string",
+    value: "deepseek-v4-pro"
+  });
   assert.deepEqual(payload.agentGraphRequest.agents[1].options.RESEARCH_ROLE, {
     type: "string",
     value: "systems-researcher"
   });
 });
 
-test("buildLocalSessionRequest passes only agent-needed secrets", () => {
+test("buildLocalSessionRequest passes source and Coral Cloud secrets without OpenRouter keys", () => {
   const payload = buildLocalSessionRequest({
     namespace: "delve-test",
     topic: "privacy preserving synthetic customer support data",
     dbPath: "/tmp/delve/blackboard.db",
     agents: ["latency-researcher"],
-    modelName: "gpt-5.4-nano",
-    fallbackModel: "deepseek/deepseek-v4-pro",
+    modelName: "deepseek-v4-pro",
     secrets: {
-      openRouterApiKey: "openrouter-secret",
+      coralApiKey: "coral-secret",
       exaApiKey: "exa-secret"
     }
   }) as {
@@ -63,8 +65,8 @@ test("buildLocalSessionRequest passes only agent-needed secrets", () => {
   };
 
   const options = payload.agentGraphRequest.agents[0].options;
-  assert.equal(options.CORAL_API_KEY, undefined);
-  assert.deepEqual(options.OPENROUTER_API_KEY, { type: "string", value: "openrouter-secret" });
+  assert.deepEqual(options.CORAL_API_KEY, { type: "string", value: "coral-secret" });
+  assert.equal(options.OPENROUTER_API_KEY, undefined);
   assert.deepEqual(options.EXA_API_KEY, { type: "string", value: "exa-secret" });
 });
 

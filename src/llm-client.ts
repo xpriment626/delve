@@ -1,6 +1,6 @@
-import { CORAL_PROXY_MODEL, OPENROUTER_BASE_URL, OPENROUTER_FALLBACK_MODEL } from "./model-routing.js";
+import { coralCloudBaseUrlForModel, DEFAULT_CORAL_PROXY_MODEL, resolveConfiguredModel } from "./model-routing.js";
 
-export type AgentModelProvider = "coral" | "openrouter" | "none";
+export type AgentModelProvider = "coral" | "none";
 
 export interface AgentModelRoute {
   provider: AgentModelProvider;
@@ -23,28 +23,29 @@ export interface JsonModelResult {
 }
 
 export function resolveAgentModelRoute(env: NodeJS.ProcessEnv): AgentModelRoute {
+  const model = resolveConfiguredModel(env);
+  if (env.CORAL_API_KEY) {
+    return {
+      provider: "coral",
+      model,
+      baseUrl: coralCloudBaseUrlForModel(model),
+      reason: "coral_cloud_llm_proxy"
+    };
+  }
+
   const coralProxyUrl = env.CORAL_PROXY_URL_CORAL_MAIN;
   if (coralProxyUrl) {
     return {
       provider: "coral",
-      model: env.CORAL_PROXY_MODEL_CORAL_MAIN ?? env.MODEL_NAME ?? CORAL_PROXY_MODEL,
+      model: env.CORAL_PROXY_MODEL_CORAL_MAIN ?? model,
       baseUrl: coralProxyUrl,
       reason: "coral_runtime_proxy_url"
     };
   }
 
-  if (env.OPENROUTER_API_KEY) {
-    return {
-      provider: "openrouter",
-      model: env.OPENROUTER_FALLBACK_MODEL ?? OPENROUTER_FALLBACK_MODEL,
-      baseUrl: OPENROUTER_BASE_URL,
-      reason: "coral_proxy_url_missing"
-    };
-  }
-
   return {
     provider: "none",
-    model: env.MODEL_NAME ?? CORAL_PROXY_MODEL,
+    model: model ?? DEFAULT_CORAL_PROXY_MODEL,
     baseUrl: "",
     reason: "no_model_route_available"
   };
@@ -60,22 +61,11 @@ export async function generateJsonWithModel(input: {
   if (input.route.provider === "none") {
     return { ok: false, route: input.route, error: "no_model_route_available" };
   }
-  if (input.route.provider === "openrouter" && !input.apiKey) {
-    return { ok: false, route: input.route, error: "missing_openrouter_api_key" };
-  }
-
-  const endpoint =
-    input.route.provider === "coral"
-      ? new URL("v1/chat/completions", ensureTrailingSlash(input.route.baseUrl)).toString()
-      : new URL("chat/completions", ensureTrailingSlash(input.route.baseUrl)).toString();
+  const endpoint = openAiEndpoint(input.route.baseUrl, "chat/completions");
   const headers: Record<string, string> = {
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    ...(input.apiKey ? { Authorization: `Bearer ${input.apiKey}` } : {})
   };
-  if (input.route.provider === "openrouter") {
-    headers.Authorization = `Bearer ${input.apiKey}`;
-    headers["HTTP-Referer"] = "http://localhost/delve";
-    headers["X-Title"] = "delve";
-  }
 
   try {
     const requestBody: Record<string, unknown> = {
@@ -83,19 +73,18 @@ export async function generateJsonWithModel(input: {
       messages: input.messages,
       temperature: input.temperature ?? 0.1,
       max_tokens: input.maxTokens ?? 1600,
+      stream: true,
+      stream_options: { include_usage: true },
       response_format: { type: "json_object" }
     };
-    if (input.route.provider === "openrouter") {
-      requestBody.reasoning = { effort: "minimal", exclude: true };
-    }
 
     const response = await fetch(endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(requestBody)
     });
-    const responseBody = await response.text();
     if (!response.ok) {
+      const responseBody = await response.text();
       return {
         ok: false,
         route: input.route,
@@ -103,10 +92,7 @@ export async function generateJsonWithModel(input: {
       };
     }
 
-    const parsed = JSON.parse(responseBody) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const content = parsed.choices?.[0]?.message?.content?.trim();
+    const content = (await readStreamingContent(response)).trim();
     if (!content) return { ok: false, route: input.route, error: "model_empty_content" };
     try {
       const data = JSON.parse(extractJsonObject(content)) as unknown;
@@ -128,6 +114,49 @@ export async function generateJsonWithModel(input: {
   }
 }
 
+async function readStreamingContent(response: Response): Promise<string> {
+  if (!response.body) throw new Error("model_stream_missing_body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (value) {
+      buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+      let separatorIndex = buffer.indexOf("\n\n");
+      while (separatorIndex >= 0) {
+        content += contentFromStreamEvent(buffer.slice(0, separatorIndex));
+        buffer = buffer.slice(separatorIndex + 2);
+        separatorIndex = buffer.indexOf("\n\n");
+      }
+    }
+    if (done) break;
+  }
+  buffer += decoder.decode().replace(/\r\n/g, "\n");
+  if (buffer.trim()) content += contentFromStreamEvent(buffer);
+  return content;
+}
+
+function contentFromStreamEvent(rawEvent: string): string {
+  let content = "";
+  const dataLines = rawEvent
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .filter(Boolean);
+  for (const data of dataLines) {
+    if (data === "[DONE]") continue;
+    const parsed = JSON.parse(data) as {
+      choices?: Array<{ delta?: { content?: unknown } }>;
+    };
+    for (const choice of parsed.choices ?? []) {
+      if (typeof choice.delta?.content === "string") content += choice.delta.content;
+    }
+  }
+  return content;
+}
+
 export function extractJsonObject(text: string): string {
   const withoutFence = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   const start = withoutFence.indexOf("{");
@@ -136,6 +165,8 @@ export function extractJsonObject(text: string): string {
   return withoutFence.slice(start, end + 1);
 }
 
-function ensureTrailingSlash(value: string): string {
-  return value.endsWith("/") ? value : `${value}/`;
+function openAiEndpoint(baseUrl: string, path: string): string {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  const openAiBase = normalized.endsWith("/v1") ? `${normalized}/` : `${normalized}/v1/`;
+  return new URL(path, openAiBase).toString();
 }

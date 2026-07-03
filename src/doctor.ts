@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { access } from "node:fs/promises";
 import path from "node:path";
 
-import { chooseModelRoute, redactSecretStatus } from "./model-routing.js";
+import { chooseModelRoute, redactSecretStatus, resolveConfiguredModel } from "./model-routing.js";
 
 export interface DoctorOptions {
   coralUrl: string;
@@ -15,7 +15,6 @@ export interface DoctorReport {
   ok: boolean;
   env: {
     CORAL_API_KEY: ReturnType<typeof redactSecretStatus>;
-    OPENROUTER_API_KEY: ReturnType<typeof redactSecretStatus>;
     EXA_API_KEY: ReturnType<typeof redactSecretStatus>;
   };
   coral: {
@@ -63,20 +62,19 @@ export async function createDoctorReport(options: DoctorOptions): Promise<Doctor
   );
   const env = {
     CORAL_API_KEY: redactSecretStatus(options.env.CORAL_API_KEY),
-    OPENROUTER_API_KEY: redactSecretStatus(options.env.OPENROUTER_API_KEY),
     EXA_API_KEY: redactSecretStatus(options.env.EXA_API_KEY)
   };
   const model = chooseModelRoute({
     coralProxyReady: coral.reachable,
     coralApiKeyPresent: env.CORAL_API_KEY.present,
-    openRouterApiKeyPresent: env.OPENROUTER_API_KEY.present
+    configuredModel: resolveConfiguredModel(options.env)
   });
   const latexCommands = {
     tectonic: await commandExists("tectonic"),
     pdflatex: await commandExists("pdflatex"),
     latexmk: await commandExists("latexmk")
   };
-  const modelConfigured = env.CORAL_API_KEY.present || env.OPENROUTER_API_KEY.present;
+  const modelConfigured = env.CORAL_API_KEY.present;
 
   return {
     ok: env.EXA_API_KEY.present && modelConfigured && manifestsPresent,

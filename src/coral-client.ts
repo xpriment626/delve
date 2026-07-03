@@ -40,9 +40,8 @@ export interface BuildSessionRequestOptions {
   dbPath: string;
   agents: readonly string[];
   modelName: string;
-  fallbackModel: string;
   secrets?: {
-    openRouterApiKey?: string;
+    coralApiKey?: string;
     exaApiKey?: string;
   };
   ttlMs?: number;
@@ -187,7 +186,6 @@ export function buildLocalSessionRequest(options: BuildSessionRequestOptions): R
           BLACKBOARD_DB_PATH: { type: "string", value: options.dbPath },
           RESEARCH_ROLE: { type: "string", value: agentName },
           MODEL_NAME: { type: "string", value: options.modelName },
-          OPENROUTER_FALLBACK_MODEL: { type: "string", value: options.fallbackModel },
           ...secretOptions(options.secrets)
         }
       })),
@@ -224,7 +222,7 @@ export function buildLocalSessionRequest(options: BuildSessionRequestOptions): R
 
 function secretOptions(secrets: BuildSessionRequestOptions["secrets"]): Record<string, { type: "string"; value: string }> {
   const entries: Record<string, { type: "string"; value: string }> = {};
-  if (secrets?.openRouterApiKey) entries.OPENROUTER_API_KEY = { type: "string", value: secrets.openRouterApiKey };
+  if (secrets?.coralApiKey) entries.CORAL_API_KEY = { type: "string", value: secrets.coralApiKey };
   if (secrets?.exaApiKey) entries.EXA_API_KEY = { type: "string", value: secrets.exaApiKey };
   return entries;
 }

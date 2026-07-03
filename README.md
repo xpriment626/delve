@@ -7,7 +7,7 @@ The npm package is `@itsshadowai/delve`; the installed command is `delve`.
 ## Install
 
 ```bash
-npm install -g @itsshadowai/delve
+npm i -g @itsshadowai/delve
 delve --help
 ```
 
@@ -36,13 +36,10 @@ rm -rf ~/.delve ~/.codex/skills/delve
 Required for live research:
 
 - `EXA_API_KEY` for source search and fetch.
-- At least one model route:
-  - `CORAL_API_KEY` for Coral's runtime LLM proxy.
-  - `OPENROUTER_API_KEY` as a fallback route.
+- `CORAL_API_KEY` for Coral Cloud's LLM proxy.
 
 Recommended:
 
-- Set both `CORAL_API_KEY` and `OPENROUTER_API_KEY` so Delve can fall back if the Coral proxy is unavailable.
 - Install a LaTeX compiler such as `tectonic` if you want Codex or local scripts to turn generated `.tex` drafts into PDFs.
 
 Optional:
@@ -55,22 +52,21 @@ Example shell setup:
 ```bash
 export EXA_API_KEY="..."
 export CORAL_API_KEY="..."
-export OPENROUTER_API_KEY="..."
+export DELVE_MODEL="deepseek-v4-pro"
 ```
 
 Or store credentials through Delve without echoing them in the terminal:
 
 ```bash
-delve auth set exa
-delve auth set coral
-# or
-delve auth set openrouter
+delve set auth exa
+delve set auth coral
+delve model select # or: delve model set deepseek-v4-pro
 ```
 
-`delve auth set` prompts with terminal echo disabled and writes `${DELVE_HOME:-~/.delve}/config.env` with file mode `0600`. Shell environment variables and a project-local `.env` override stored defaults. For automation, pipe a token through stdin:
+`delve set auth` prompts with terminal echo disabled and writes `${DELVE_HOME:-~/.delve}/config.env` with file mode `0600`. Shell environment variables and a project-local `.env` override stored defaults. For automation, pipe a token through stdin:
 
 ```bash
-printf '%s\n' "$OPENROUTER_API_KEY" | delve auth set openrouter --stdin
+printf '%s\n' "$CORAL_API_KEY" | delve set auth coral --stdin
 ```
 
 Or create a project-local `.env` in the directory where you run `delve`:
@@ -78,7 +74,7 @@ Or create a project-local `.env` in the directory where you run `delve`:
 ```bash
 EXA_API_KEY=
 CORAL_API_KEY=
-OPENROUTER_API_KEY=
+DELVE_MODEL=deepseek-v4-pro
 CORAL_SERVER_URL=http://localhost:5555
 CORAL_SERVER_AUTH_KEY=dev
 ```
@@ -90,7 +86,9 @@ From the project directory where you want outputs:
 ```bash
 delve init
 delve codex install-skill
-delve auth set coral # or: delve auth set openrouter
+delve set auth coral
+delve set auth exa
+delve model select # or: delve model set deepseek-v4-pro
 delve --json doctor
 ```
 
@@ -204,12 +202,21 @@ Live agents search and fetch sources through Exa MCP:
 - `web_search_advanced_exa`
 - `web_fetch_exa`
 
-Agent synthesis prefers the Coral runtime proxy:
+Agent synthesis uses Coral Cloud's OpenAI-compatible LLM proxy when `CORAL_API_KEY` is configured:
 
-- proxy name: `CORAL_MAIN`
-- preferred model: `gpt-5.4-nano`
-- fallback endpoint: OpenRouter
-- fallback model: `deepseek/deepseek-v4-pro`
+- default model: `deepseek-v4-pro`
+- selected model: `${DELVE_MODEL:-deepseek-v4-pro}`
+
+Use these commands to inspect or change the model:
+
+```bash
+delve model status
+delve model list
+delve model select
+delve model set deepseek-v4-pro
+```
+
+`delve model list` uses Coral Cloud model listing when `CORAL_API_KEY` is configured. If a live Coral proxy URL is explicitly supplied, it can also read that OpenAI-compatible `/v1/models` endpoint; otherwise it falls back to the model configured for Delve.
 
 If model synthesis fails, Delve writes an extractive source-backed fallback note and marks the work as degraded.
 
@@ -236,7 +243,7 @@ Use `final-package.json` as the source of truth. Important fields:
 - `src/research-runner.ts`: live/offline orchestration, blocking finalization, artifact writing.
 - `src/blackboard.ts`: SQLite schema, safe read tools, finalization rules.
 - `src/exa-research.ts`: Exa MCP search/fetch normalization.
-- `src/llm-client.ts`: Coral proxy and OpenRouter JSON model calls.
+- `src/llm-client.ts`: Coral Cloud LLM proxy JSON model calls.
 - `src/agent-research.ts`: role-specific research and negotiation synthesis.
 - `src/eve-coral-agent.ts`: Coral MCP bridge used by the local agent manifests.
 - `agent/`: Vercel Eve project files, specialist subagents, blackboard tools, and Exa MCP connection.

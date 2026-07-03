@@ -3,16 +3,20 @@ import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { emitKeypressEvents } from "node:readline";
+import { fileURLToPath } from "node:url";
 import { Command, CommanderError } from "commander";
 import { config as loadEnv } from "dotenv";
 
 import { authConfigPath, getAuthStatus, parseAuthProvider, resolveDelveHome, setAuthToken, AUTH_ENV_BY_PROVIDER, type SetAuthTokenResult, type AuthStatus } from "./auth-config.js";
 import { getCodexSkillStatus, installCodexSkill, type CodexSkillStatus, type InstallCodexSkillResult } from "./codex-skill.js";
 import { createDoctorReport } from "./doctor.js";
+import { getModelStatus, listModels, setConfiguredModel, type ModelListResult, type ModelStatus, type SetModelResult } from "./model-config.js";
 import type { DoctorReport } from "./doctor.js";
 import type { TopologyMode } from "./blackboard.js";
 
-const PROJECT_ROOT = resolveProjectRoot(import.meta.dirname);
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_ROOT = resolveProjectRoot(MODULE_DIR);
 loadEnv({ quiet: true });
 loadEnv({ path: authConfigPath(process.env), quiet: true });
 loadEnv({ path: path.join(PROJECT_ROOT, ".env"), quiet: true });
@@ -77,22 +81,11 @@ const auth = program.command("auth").description("Manage Delve credentials in a 
 auth
   .command("set")
   .description("Store a credential without putting the secret in shell history.")
-  .argument("<provider>", "credential provider: coral, openrouter, or exa")
+  .argument("<provider>", "credential provider: coral or exa")
   .option("--stdin", "read the token from stdin instead of a hidden prompt")
   .option("--config <path>", "credential config path; defaults to ${DELVE_HOME:-~/.delve}/config.env")
   .action(async (providerValue: string, options: { stdin?: boolean; config?: string }) => {
-    const provider = parseAuthProvider(providerValue);
-    const token = options.stdin
-      ? await readSecretFromStdin()
-      : await promptHidden(`Enter ${AUTH_ENV_BY_PROVIDER[provider]}: `);
-    const result = await setAuthToken({
-      provider,
-      token,
-      env: process.env,
-      configPath: options.config
-    });
-    process.env[result.key] = token.trim();
-    outputWithHuman(result, formatAuthSetResult(result));
+    await handleAuthSet(providerValue, options);
   });
 
 auth
@@ -102,6 +95,82 @@ auth
   .action(async (options: { config?: string }) => {
     const status = await getAuthStatus(process.env, options.config);
     outputWithHuman(status, formatAuthStatus(status));
+  });
+
+const set = program.command("set").description("Canonical Delve configuration shortcuts.");
+
+set
+  .command("auth")
+  .description("Store a credential without putting the secret in shell history.")
+  .argument("<provider>", "credential provider: coral or exa")
+  .option("--stdin", "read the token from stdin instead of a hidden prompt")
+  .option("--config <path>", "credential config path; defaults to ${DELVE_HOME:-~/.delve}/config.env")
+  .action(async (providerValue: string, options: { stdin?: boolean; config?: string }) => {
+    await handleAuthSet(providerValue, options);
+  });
+
+set
+  .command("model")
+  .description("Set the Coral LLM proxy model used by Delve agents.")
+  .argument("<model>", "model id, for example deepseek-v4-pro")
+  .option("--config <path>", "local config path; defaults to ${DELVE_HOME:-~/.delve}/config.env")
+  .action(async (modelName: string, options: { config?: string }) => {
+    await handleModelSet(modelName, options);
+  });
+
+const model = program.command("model").description("Inspect or set the Coral LLM proxy model used by Delve agents.");
+
+model
+  .command("status")
+  .description("Show the configured Delve model.")
+  .option("--config <path>", "local config path; defaults to ${DELVE_HOME:-~/.delve}/config.env")
+  .action(async (options: { config?: string }) => {
+    const status = await getModelStatus(process.env, options.config);
+    outputWithHuman(status, formatModelStatus(status));
+  });
+
+model
+  .command("list")
+  .description("List selectable Delve models, optionally from a Coral proxy URL.")
+  .option("--config <path>", "local config path; defaults to ${DELVE_HOME:-~/.delve}/config.env")
+  .option("--proxy-url <url>", "OpenAI-compatible Coral proxy URL; when set, reads <url>/v1/models")
+  .action(async (options: { config?: string; proxyUrl?: string }) => {
+    const result = await listModels({
+      env: process.env,
+      configPath: options.config,
+      proxyUrl: options.proxyUrl
+    });
+    outputWithHuman(result, formatModelList(result));
+  });
+
+model
+  .command("set")
+  .description("Set the Coral LLM proxy model used by Delve agents.")
+  .argument("<model>", "model id, for example deepseek-v4-pro")
+  .option("--config <path>", "local config path; defaults to ${DELVE_HOME:-~/.delve}/config.env")
+  .action(async (modelName: string, options: { config?: string }) => {
+    await handleModelSet(modelName, options);
+  });
+
+model
+  .command("select")
+  .description("Select the Delve model from an arrow-key terminal menu.")
+  .option("--config <path>", "local config path; defaults to ${DELVE_HOME:-~/.delve}/config.env")
+  .option("--proxy-url <url>", "OpenAI-compatible Coral proxy URL; when set, reads <url>/v1/models")
+  .action(async (options: { config?: string; proxyUrl?: string }) => {
+    const result = await listModels({
+      env: process.env,
+      configPath: options.config,
+      proxyUrl: options.proxyUrl
+    });
+    const selected = await selectModelFromMenu(result.models, result.selectedModel);
+    const setResult = await setConfiguredModel({
+      model: selected,
+      env: process.env,
+      configPath: options.config
+    });
+    process.env.DELVE_MODEL = setResult.model;
+    outputWithHuman({ ...setResult, availableModels: result.models, listSource: result.source }, formatModelSetResult(setResult));
   });
 
 const codex = program.command("codex").description("Manage Codex integration helpers.");
@@ -468,11 +537,12 @@ function buildInitNextSteps(doctor: DoctorReport, codexSkill: CodexSkillStatus):
     steps.push("delve codex install-skill");
   }
   if (!doctor.env.EXA_API_KEY.present) {
-    steps.push("delve auth set exa");
+    steps.push("delve set auth exa");
   }
-  if (!doctor.env.CORAL_API_KEY.present && !doctor.env.OPENROUTER_API_KEY.present) {
-    steps.push("delve auth set coral # or: delve auth set openrouter");
+  if (!doctor.env.CORAL_API_KEY.present) {
+    steps.push("delve set auth coral");
   }
+  steps.push("delve model select # or: delve model set deepseek-v4-pro");
   steps.push("delve --json doctor");
   steps.push("delve --json research run --topic \"your topic\" --format markdown --db .delve/blackboard.db --out artifacts");
   return steps;
@@ -491,7 +561,10 @@ function formatInitReport(report: InitReport): string {
     "",
     "Required credentials:",
     `  ${statusMark(report.doctor.env.EXA_API_KEY.present)} EXA_API_KEY`,
-    `  ${statusMark(report.doctor.env.CORAL_API_KEY.present || report.doctor.env.OPENROUTER_API_KEY.present)} CORAL_API_KEY or OPENROUTER_API_KEY`,
+    `  ${statusMark(report.doctor.env.CORAL_API_KEY.present)} CORAL_API_KEY`,
+    "",
+    "Model:",
+    `  ${report.doctor.model.model} (${report.doctor.model.reason})`,
     "",
     "Optional tooling:",
     `  ${statusMark(report.doctor.tooling.latex.available)} LaTeX compiler (tectonic, pdflatex, or latexmk)`,
@@ -558,6 +631,34 @@ function formatInstallSkillResult(result: InstallCodexSkillResult): string {
   ].join("\n");
 }
 
+function formatModelStatus(status: ModelStatus): string {
+  return [
+    "Delve model",
+    `Model: ${status.model}`,
+    `Source: ${status.source}`,
+    `Config: ${status.configPath}`
+  ].join("\n");
+}
+
+function formatModelList(result: ModelListResult): string {
+  return [
+    "Delve models",
+    `Selected: ${result.selectedModel}`,
+    `Source: ${result.source}${result.proxyUrl ? ` (${result.proxyUrl})` : ""}`,
+    `Config: ${result.configPath}`,
+    "",
+    ...result.models.map((model) => `${model === result.selectedModel ? "*" : " "} ${model}`)
+  ].join("\n");
+}
+
+function formatModelSetResult(result: SetModelResult): string {
+  return [
+    "Delve model",
+    `Stored: ${result.model}`,
+    `Config: ${result.configPath}`
+  ].join("\n");
+}
+
 function statusMark(ok: boolean): string {
   return ok ? "[ok]" : "[missing]";
 }
@@ -570,6 +671,31 @@ async function prepareInitPaths(dbPath: string, outDir: string): Promise<InitRep
     blackboardDir,
     artifactsDir: outDir
   };
+}
+
+async function handleAuthSet(providerValue: string, options: { stdin?: boolean; config?: string }): Promise<void> {
+  const provider = parseAuthProvider(providerValue);
+  const token = options.stdin
+    ? await readSecretFromStdin()
+    : await promptHidden(`Enter ${AUTH_ENV_BY_PROVIDER[provider]}: `);
+  const result = await setAuthToken({
+    provider,
+    token,
+    env: process.env,
+    configPath: options.config
+  });
+  process.env[result.key] = token.trim();
+  outputWithHuman(result, formatAuthSetResult(result));
+}
+
+async function handleModelSet(modelName: string, options: { config?: string }): Promise<void> {
+  const result = await setConfiguredModel({
+    model: modelName,
+    env: process.env,
+    configPath: options.config
+  });
+  process.env.DELVE_MODEL = result.model;
+  outputWithHuman(result, formatModelSetResult(result));
 }
 
 function formatAuthSetResult(result: SetAuthTokenResult): string {
@@ -586,9 +712,74 @@ function formatAuthStatus(status: AuthStatus): string {
     "Delve auth",
     `Config: ${status.configPath}`,
     `  ${statusMark(status.keys.EXA_API_KEY.present)} EXA_API_KEY`,
-    `  ${statusMark(status.keys.CORAL_API_KEY.present)} CORAL_API_KEY`,
-    `  ${statusMark(status.keys.OPENROUTER_API_KEY.present)} OPENROUTER_API_KEY`
+    `  ${statusMark(status.keys.CORAL_API_KEY.present)} CORAL_API_KEY`
   ].join("\n");
+}
+
+async function selectModelFromMenu(models: string[], selectedModel: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) {
+    throw new Error("No interactive TTY available; use `delve model set <model>` instead");
+  }
+  if (models.length === 0) throw new Error("No models available to select");
+
+  const maxVisible = 12;
+  let index = Math.max(0, models.indexOf(selectedModel));
+  let offset = Math.max(0, Math.min(index - Math.floor(maxVisible / 2), Math.max(0, models.length - maxVisible)));
+  const stdin = process.stdin;
+  const stderr = process.stderr;
+  const wasRaw = stdin.isRaw;
+
+  function render(): void {
+    offset = Math.min(offset, Math.max(0, models.length - maxVisible));
+    if (index < offset) offset = index;
+    if (index >= offset + maxVisible) offset = index - maxVisible + 1;
+    const visible = models.slice(offset, offset + maxVisible);
+    stderr.write("\x1b[2J\x1b[H");
+    stderr.write("Select Delve model\n\n");
+    for (let row = 0; row < visible.length; row += 1) {
+      const model = visible[row];
+      const cursor = offset + row === index ? ">" : " ";
+      const current = model === selectedModel ? "*" : " ";
+      stderr.write(`${cursor} ${current} ${model}\n`);
+    }
+    stderr.write("\nUse up/down arrows, Enter to select, Ctrl-C to cancel.\n");
+  }
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      stdin.off("keypress", onKeypress);
+      stdin.setRawMode(wasRaw);
+      stdin.pause();
+      stderr.write("\n");
+    };
+    const onKeypress = (_char: string, key: { name?: string; ctrl?: boolean }) => {
+      if (key.ctrl && key.name === "c") {
+        cleanup();
+        reject(new Error("cancelled"));
+        return;
+      }
+      if (key.name === "up") {
+        index = Math.max(0, index - 1);
+        render();
+        return;
+      }
+      if (key.name === "down") {
+        index = Math.min(models.length - 1, index + 1);
+        render();
+        return;
+      }
+      if (key.name === "return" || key.name === "enter") {
+        const model = models[index];
+        cleanup();
+        resolve(model);
+      }
+    };
+    emitKeypressEvents(stdin);
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on("keypress", onKeypress);
+    render();
+  });
 }
 
 async function readSecretFromStdin(): Promise<string> {

@@ -27,14 +27,15 @@ Use `delve init` for the human-readable onboarding checklist. It reports expecte
 For local credential setup, prefer the non-echoing auth helper instead of asking the user to paste secrets into a shell command:
 
 ```bash
-delve auth set exa
-delve auth set coral
-# or
-delve auth set openrouter
+delve set auth exa
+delve set auth coral
 delve auth status
+delve model status
 ```
 
-`delve auth set` writes `${DELVE_HOME:-~/.delve}/config.env` with file mode `0600`. Use `--stdin` only for automation where the token is already in an environment variable.
+`delve set auth` writes `${DELVE_HOME:-~/.delve}/config.env` with file mode `0600`. Use `--stdin` only for automation where the token is already in an environment variable.
+
+Use `delve model select` for the arrow-key model menu, or `delve model set <model>` for non-interactive selection. The default Delve model is `deepseek-v4-pro` through Coral Cloud's LLM proxy.
 
 ## Cleanup
 
@@ -108,4 +109,4 @@ When drafting final artifacts:
 - Keep live write behavior scoped to `research run`; `request` is read-only.
 - Verify `finalizationBlockedBeforeNegotiation` is true before trusting a completed artifact.
 - Inspect `blackboard topology` after `--topology dynamic-revision`.
-- Do not print or pass `CORAL_API_KEY`, `OPENROUTER_API_KEY`, or `EXA_API_KEY` on the command line.
+- Do not print or pass `CORAL_API_KEY` or `EXA_API_KEY` on the command line.

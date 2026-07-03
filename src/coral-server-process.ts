@@ -4,6 +4,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 
+import {
+  coralCloudBaseUrlForModel,
+  resolveConfiguredModel
+} from "./model-routing.js";
+
 type CoralServerChild = ChildProcessByStdio<null, Readable, Readable>;
 
 export interface ManagedCoralServer {
@@ -68,18 +73,38 @@ export function buildCoralServerEnv(
     ...env,
     CONFIG_FILE_PATH: configPath
   };
+  if (!nextEnv.DELVE_NODE_BIN) {
+    nextEnv.DELVE_NODE_BIN = process.execPath;
+  }
   if (!nextEnv.CLOUD_API_KEY && nextEnv.CORAL_API_KEY) {
     nextEnv.CLOUD_API_KEY = nextEnv.CORAL_API_KEY;
   }
   return nextEnv;
 }
 
-export function buildRuntimeCoralConfig(projectRoot: string): string {
-  const agentPaths = SPECIALIST_AGENT_NAMES.map((agentName) => path.resolve(projectRoot, "agents", agentName));
+export function buildRuntimeCoralConfig(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv = {},
+  agentPaths = SPECIALIST_AGENT_NAMES.map((agentName) => path.resolve(projectRoot, "agents", agentName))
+): string {
+  const cloudApiKey = firstNonEmpty(env.CORAL_API_KEY, env.CLOUD_API_KEY);
+  const modelName = resolveConfiguredModel(env);
+  const providerBaseUrl = coralCloudBaseUrlForModel(modelName);
   return [
     "[auth]",
     'keys = ["dev"]',
     "",
+    ...(cloudApiKey
+      ? [
+          "[cloud]",
+          `apiKey = ${JSON.stringify(cloudApiKey)}`,
+          "",
+          "[llm-proxy.providers.openai]",
+          `apiKey = ${JSON.stringify(cloudApiKey)}`,
+          `baseUrl = ${JSON.stringify(providerBaseUrl)}`,
+          ""
+        ]
+      : []),
     "[registry]",
     "includeCoralHomeAgents = false",
     "localAgents = [",
@@ -94,9 +119,100 @@ export async function writeRuntimeCoralConfig(projectRoot: string, env: NodeJS.P
   const configPath = path.join(delveHome, "coral-config.runtime.toml");
   await mkdir(delveHome, { recursive: true, mode: 0o700 });
   await chmod(delveHome, 0o700);
-  await writeFile(configPath, buildRuntimeCoralConfig(projectRoot), { mode: 0o600 });
+  const agentPaths = await writeRuntimeAgentManifests(projectRoot, env, delveHome);
+  await writeFile(configPath, buildRuntimeCoralConfig(projectRoot, env, agentPaths), { mode: 0o600 });
   await chmod(configPath, 0o600);
   return configPath;
+}
+
+async function writeRuntimeAgentManifests(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv,
+  delveHome: string
+): Promise<string[]> {
+  const modelName = resolveConfiguredModel(env);
+  const runtimeRoot = path.join(delveHome, "runtime-agents", slugForPath(modelName));
+  await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
+  await chmod(runtimeRoot, 0o700).catch(() => undefined);
+  const agentPaths: string[] = [];
+  for (const agentName of SPECIALIST_AGENT_NAMES) {
+    const agentPath = path.join(runtimeRoot, agentName);
+    await mkdir(agentPath, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(agentPath, "coral-agent.toml"), runtimeAgentManifest(agentName, modelName), { mode: 0o600 });
+    await writeFile(path.join(agentPath, "startup.sh"), runtimeAgentStartup(projectRoot, agentName), { mode: 0o700 });
+    await chmod(path.join(agentPath, "startup.sh"), 0o700);
+    agentPaths.push(agentPath);
+  }
+  return agentPaths;
+}
+
+function runtimeAgentManifest(agentName: (typeof SPECIALIST_AGENT_NAMES)[number], modelName: string): string {
+  const descriptionByAgent: Record<(typeof SPECIALIST_AGENT_NAMES)[number], string> = {
+    "latency-researcher":
+      "Eve-backed specialist for performance, latency, bottleneck, and time-to-value research on arbitrary topics.",
+    "systems-researcher":
+      "Eve-backed specialist for architecture, implementation tradeoffs, reliability, and deployment research on arbitrary topics.",
+    "quality-researcher":
+      "Eve-backed specialist for evaluation, robustness, UX, risk, and evidence quality research on arbitrary topics."
+  };
+  const summaryByAgent: Record<(typeof SPECIALIST_AGENT_NAMES)[number], string> = {
+    "latency-researcher": "Performance specialist for deep research.",
+    "systems-researcher": "Systems specialist for deep research.",
+    "quality-researcher": "Quality specialist for deep research."
+  };
+  return [
+    "edition = 4",
+    "",
+    "[agent]",
+    `name = ${JSON.stringify(agentName)}`,
+    'version = "0.1.0"',
+    `description = ${JSON.stringify(descriptionByAgent[agentName])}`,
+    `summary = ${JSON.stringify(summaryByAgent[agentName])}`,
+    'readme = "Executable Eve-backed Coral agent. Uses Coral coordination, app-owned SQLite blackboard tools, Exa MCP research, and negotiation before finalization."',
+    "",
+    "[agent.license]",
+    'type = "text"',
+    'text = "MIT"',
+    "",
+    "[options]",
+    `MODEL_NAME = { type = "string", default = ${JSON.stringify(modelName)} }`,
+    'BLACKBOARD_DB_PATH = { type = "string", default = ".delve/blackboard.db" }',
+    `RESEARCH_ROLE = { type = "string", default = ${JSON.stringify(agentName)} }`,
+    "",
+    "[options.CORAL_API_KEY]",
+    'type = "string"',
+    "required = false",
+    "secret = true",
+    'transport = "env"',
+    "",
+    "[options.EXA_API_KEY]",
+    'type = "string"',
+    "required = false",
+    "secret = true",
+    'transport = "env"',
+    "",
+    "[[llm.proxies]]",
+    'name = "CORAL_MAIN"',
+    'format = "OpenAI"',
+    `model = ${JSON.stringify(modelName)}`,
+    "",
+    "[runtimes.executable]",
+    'path = "bash"',
+    'arguments = ["startup.sh"]',
+    'transport = "streamable_http"',
+    ""
+  ].join("\n");
+}
+
+function runtimeAgentStartup(projectRoot: string, agentName: string): string {
+  return [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    `cd ${shellQuote(projectRoot)}`,
+    'node_bin="${DELVE_NODE_BIN:-node}"',
+    `exec "$node_bin" dist/src/eve-coral-agent.js --role ${shellQuote(agentName)} --max-messages 3`,
+    ""
+  ].join("\n");
 }
 
 export function canAutoStartCoralUrl(coralUrl: string): boolean {
@@ -171,6 +287,18 @@ function ensureTrailingSlash(value: string): string {
 
 function resolveDelveHome(env: NodeJS.ProcessEnv): string {
   return env.DELVE_HOME && env.DELVE_HOME.length > 0 ? env.DELVE_HOME : path.join(homedir(), ".delve");
+}
+
+function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
+  return values.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
+}
+
+function slugForPath(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "model";
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function sleep(ms: number): Promise<void> {

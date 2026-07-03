@@ -1,7 +1,6 @@
 import type { ClaimRecord, NoteRecord, SourceRef, VerdictStance } from "./blackboard.js";
 import { collectExaSources } from "./exa-research.js";
 import { generateJsonWithModel, resolveAgentModelRoute, type AgentModelRoute, type ChatMessage } from "./llm-client.js";
-import { OPENROUTER_BASE_URL, OPENROUTER_FALLBACK_MODEL } from "./model-routing.js";
 
 export interface AgentResearchClaim {
   claim: string;
@@ -116,9 +115,9 @@ export async function researchRole(input: {
         })
       }
     ];
-  const modelResult = await generateJsonWithFallback({
-    primaryRoute: modelRoute,
-    apiKey: input.env.OPENROUTER_API_KEY,
+  const modelResult = await generateJsonWithModel({
+    route: modelRoute,
+    apiKey: input.env.CORAL_API_KEY,
     maxTokens: 3200,
     messages
   });
@@ -137,6 +136,7 @@ export async function researchRole(input: {
     }
   }
 
+  reportModelFallback(input.env, input.role, "research", modelResult.error);
   return {
     ...buildExtractiveResearchOutput(input.topic, profile, sourceResult.sources),
     searchQuery,
@@ -194,9 +194,9 @@ export async function negotiateRole(input: {
         })
       }
     ];
-  const modelResult = await generateJsonWithFallback({
-    primaryRoute: modelRoute,
-    apiKey: input.env.OPENROUTER_API_KEY,
+  const modelResult = await generateJsonWithModel({
+    route: modelRoute,
+    apiKey: input.env.CORAL_API_KEY,
     maxTokens: 2200,
     messages
   });
@@ -212,6 +212,7 @@ export async function negotiateRole(input: {
     }
   }
 
+  reportModelFallback(input.env, input.role, "negotiate", modelResult.error);
   return {
     ...buildHeuristicNegotiation(input.topic, profile, input.notes, input.claims),
     modelRoute,
@@ -251,30 +252,23 @@ export async function reviseRole(input: {
   };
 }
 
-async function generateJsonWithFallback(input: {
-  primaryRoute: AgentModelRoute;
-  apiKey?: string;
-  maxTokens: number;
-  messages: Parameters<typeof generateJsonWithModel>[0]["messages"];
-}) {
-  const primary = await generateJsonWithModel({
-    route: input.primaryRoute,
-    apiKey: input.apiKey,
-    maxTokens: input.maxTokens,
-    messages: input.messages
-  });
-  if (primary.ok || input.primaryRoute.provider !== "coral" || !input.apiKey) return primary;
-  return generateJsonWithModel({
-    route: {
-      provider: "openrouter",
-      model: OPENROUTER_FALLBACK_MODEL,
-      baseUrl: OPENROUTER_BASE_URL,
-      reason: `fallback_after_${input.primaryRoute.reason}`
-    },
-    apiKey: input.apiKey,
-    maxTokens: input.maxTokens,
-    messages: input.messages
-  });
+function reportModelFallback(env: NodeJS.ProcessEnv, role: string, phase: string, error: string | undefined): void {
+  if (env.DELVE_DEBUG_MODEL !== "1" || !error) return;
+  console.error(
+    JSON.stringify({
+      role,
+      event: "model_fallback",
+      phase,
+      error: sanitizeModelError(error)
+    })
+  );
+}
+
+function sanitizeModelError(error: string): string {
+  return error
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
+    .replace(/(api[_-]?key["':=\s]+)[A-Za-z0-9._~+/=-]+/gi, "$1[redacted]")
+    .slice(0, 800);
 }
 
 function normalizeResearchOutput(

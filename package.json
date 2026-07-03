@@ -1,6 +1,6 @@
 {
   "name": "@itsshadowai/delve",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Coral-backed multi-agent research CLI with a SQLite blackboard and Delve-style negotiation.",
   "license": "MIT",
   "author": "itsshadowai",
@@ -47,6 +47,7 @@
     "eve:dev": "eve dev",
     "coral:start": "node scripts/start-coral.mjs",
     "install-local": "npm run build && node scripts/install-local.mjs",
+    "postinstall": "node scripts/postinstall.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check && npm test && npm run build"
   },

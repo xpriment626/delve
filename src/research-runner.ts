@@ -11,7 +11,7 @@ import {
 } from "./blackboard.js";
 import { CoralClient, type CoralSessionIdentifier } from "./coral-client.js";
 import { ensureCoralServerReady, type ManagedCoralServer } from "./coral-server-process.js";
-import { CORAL_PROXY_MODEL, OPENROUTER_FALLBACK_MODEL } from "./model-routing.js";
+import { resolveConfiguredModel } from "./model-routing.js";
 
 export const SPECIALIST_AGENTS = ["latency-researcher", "systems-researcher", "quality-researcher"] as const;
 const PROJECT_ROOT = resolveProjectRoot(import.meta.dirname);
@@ -174,10 +174,9 @@ async function runLiveResearch(options: RunResearchOptions): Promise<RunResearch
       topic: options.topic,
       dbPath: options.dbPath,
       agents: SPECIALIST_AGENTS,
-      modelName: CORAL_PROXY_MODEL,
-      fallbackModel: OPENROUTER_FALLBACK_MODEL,
+      modelName: resolveConfiguredModel(process.env),
       secrets: {
-        openRouterApiKey: process.env.OPENROUTER_API_KEY,
+        coralApiKey: process.env.CORAL_API_KEY,
         exaApiKey: process.env.EXA_API_KEY
       },
       ttlMs: timeoutMs + 60000,

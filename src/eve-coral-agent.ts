@@ -147,7 +147,8 @@ async function handleTaskMessage(
         modelReason: verdict.modelRoute.reason,
         modelUsed: verdict.modelUsed,
         degraded: isAgentOutputDegraded(verdict),
-        degradationReasons: degradationReasonsForAgentOutput(verdict)
+        degradationReasons: degradationReasonsForAgentOutput(verdict),
+        ...modelDiagnosticsFromAgentOutput(verdict)
       }
     };
   }
@@ -201,7 +202,8 @@ async function handleTaskMessage(
         modelReason: revision.modelRoute.reason,
         modelUsed: revision.modelUsed,
         degraded: isAgentOutputDegraded(revision),
-        degradationReasons: degradationReasonsForAgentOutput(revision)
+        degradationReasons: degradationReasonsForAgentOutput(revision),
+        ...modelDiagnosticsFromAgentOutput(revision)
       }
     };
   }
@@ -242,7 +244,8 @@ async function handleTaskMessage(
       modelReason: research.modelRoute.reason,
       modelUsed: research.modelUsed,
       degraded: isAgentOutputDegraded(research),
-      degradationReasons: degradationReasonsForAgentOutput(research)
+      degradationReasons: degradationReasonsForAgentOutput(research),
+      ...modelDiagnosticsFromAgentOutput(research)
     }
   };
 }
@@ -281,6 +284,16 @@ function degradationReasonsForAgentOutput(input: {
   if (input.sourceError) reasons.add("source_error");
   if (input.modelError) reasons.add("model_error");
   return [...reasons];
+}
+
+function modelDiagnosticsFromAgentOutput(input: {
+  modelRoute: { baseUrl?: string };
+  modelError?: string;
+}): Record<string, string> {
+  return {
+    ...(input.modelRoute.baseUrl ? { modelBaseUrl: input.modelRoute.baseUrl } : {}),
+    ...(input.modelError ? { modelError: input.modelError.slice(0, 500) } : {})
+  };
 }
 
 function parseResearchTaskMessage(text: string): ResearchTaskMessage {

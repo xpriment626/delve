@@ -103,7 +103,7 @@ test("final package preserves revise status and degraded agent metadata", async 
       sources: [{ title: "Architecture note", url: "https://example.com/topology" }],
       execution: {
         modelProvider: "coral",
-        modelReason: "coral_runtime_proxy_url",
+        modelReason: "coral_cloud_llm_proxy",
         modelUsed: false,
         degraded: true,
         degradationReasons: ["model_not_used"]
@@ -130,8 +130,8 @@ test("final package preserves revise status and degraded agent metadata", async 
           stance: "revise",
           rationale: "The final package should expose degraded agent work before user-facing synthesis.",
           execution: {
-            modelProvider: "openrouter",
-            modelReason: "fallback_after_coral_runtime_proxy_url",
+            modelProvider: "coral",
+            modelReason: "coral_cloud_llm_proxy",
             modelUsed: true,
             degraded: false,
             degradationReasons: []

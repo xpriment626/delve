@@ -38,15 +38,31 @@ test("Coral auto-start forwards explicit alternate loopback ports", () => {
   ]);
 });
 
-test("runtime Coral config uses absolute packaged agent paths", () => {
+test("runtime Coral config uses selected-model provider and absolute agent paths", () => {
   const projectRoot = "/tmp/delve-project";
-  const config = buildRuntimeCoralConfig(projectRoot);
+  const config = buildRuntimeCoralConfig(projectRoot, { CORAL_API_KEY: "coral-secret" });
 
+  assert.match(config, /\[cloud\]\s+apiKey = "coral-secret"/);
+  assert.match(config, /\[llm-proxy\.providers\.openai\]/);
+  assert.match(config, /baseUrl = "https:\/\/llm\.coralcloud\.ai\/deepseek\/v1"/);
+  assert.doesNotMatch(config, /models = /);
+  assert.doesNotMatch(config, /allowAnyModel/);
   assert.match(config, /\[registry\]/);
   assert.match(config, /"\/tmp\/delve-project\/agents\/latency-researcher"/);
   assert.match(config, /"\/tmp\/delve-project\/agents\/systems-researcher"/);
   assert.match(config, /"\/tmp\/delve-project\/agents\/quality-researcher"/);
   assert.doesNotMatch(config, /"agents\//);
+});
+
+test("runtime Coral config selects OpenAI Cloud provider for non-DeepSeek models", () => {
+  const config = buildRuntimeCoralConfig("/tmp/delve-project", {
+    CORAL_API_KEY: "coral-secret",
+    DELVE_MODEL: "gpt-5.4-nano"
+  });
+
+  assert.match(config, /\[llm-proxy\.providers\.openai\]/);
+  assert.match(config, /baseUrl = "https:\/\/llm\.coralcloud\.ai\/openai\/v1"/);
+  assert.doesNotMatch(config, /https:\/\/llm\.coralcloud\.ai\/deepseek\/v1/);
 });
 
 test("Coral server env points at generated runtime config and maps Coral API key for Cloud proxy", async () => {
@@ -61,7 +77,17 @@ test("Coral server env points at generated runtime config and maps Coral API key
 
     assert.equal(env.CONFIG_FILE_PATH, path.join(dir, "coral-config.runtime.toml"));
     assert.equal(env.CLOUD_API_KEY, "coral-secret");
-    assert.match(await readFile(configPath, "utf8"), /"\/tmp\/delve-project\/agents\/latency-researcher"/);
+    assert.equal(env.DELVE_NODE_BIN, process.execPath);
+    const configText = await readFile(configPath, "utf8");
+    assert.match(configText, /runtime-agents\/deepseek-v4-pro\/latency-researcher/);
+    assert.doesNotMatch(configText, /\[llm-proxy\.providers\.openai\]/);
+    const manifest = await readFile(path.join(dir, "runtime-agents", "deepseek-v4-pro", "latency-researcher", "coral-agent.toml"), "utf8");
+    assert.match(manifest, /MODEL_NAME = \{ type = "string", default = "deepseek-v4-pro" \}/);
+    assert.match(manifest, /model = "deepseek-v4-pro"/);
+    const startup = await readFile(path.join(dir, "runtime-agents", "deepseek-v4-pro", "latency-researcher", "startup.sh"), "utf8");
+    assert.match(startup, /cd '\/tmp\/delve-project'/);
+    assert.match(startup, /DELVE_NODE_BIN:-node/);
+    assert.match(startup, /exec "\$node_bin" dist\/src\/eve-coral-agent\.js/);
     assert.equal((await stat(dir)).mode & 0o777, 0o700);
     assert.equal((await stat(configPath)).mode & 0o777, 0o600);
   } finally {
