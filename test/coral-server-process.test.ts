@@ -42,9 +42,10 @@ test("runtime Coral config uses selected-model provider and absolute agent paths
   const projectRoot = "/tmp/delve-project";
   const config = buildRuntimeCoralConfig(projectRoot, { CORAL_API_KEY: "coral-secret" });
 
-  assert.match(config, /\[cloud\]\s+apiKey = "coral-secret"/);
-  assert.match(config, /\[llm-proxy\.providers\.openai\]/);
-  assert.match(config, /baseUrl = "https:\/\/llm\.coralcloud\.ai\/deepseek\/v1"/);
+  assert.doesNotMatch(config, /coral-secret/);
+  assert.doesNotMatch(config, /\[cloud\]/);
+  assert.doesNotMatch(config, /\[llm-proxy\.providers\.openai\]/);
+  assert.doesNotMatch(config, /baseUrl = "https:\/\/llm\.coralcloud\.ai\/deepseek\/v1"/);
   assert.doesNotMatch(config, /models = /);
   assert.doesNotMatch(config, /allowAnyModel/);
   assert.match(config, /\[registry\]/);
@@ -54,14 +55,16 @@ test("runtime Coral config uses selected-model provider and absolute agent paths
   assert.doesNotMatch(config, /"agents\//);
 });
 
-test("runtime Coral config selects OpenAI Cloud provider for non-DeepSeek models", () => {
+test("runtime Coral config does not persist Coral Cloud secrets for non-DeepSeek models", () => {
   const config = buildRuntimeCoralConfig("/tmp/delve-project", {
     CORAL_API_KEY: "coral-secret",
     DELVE_MODEL: "gpt-5.4-nano"
   });
 
-  assert.match(config, /\[llm-proxy\.providers\.openai\]/);
-  assert.match(config, /baseUrl = "https:\/\/llm\.coralcloud\.ai\/openai\/v1"/);
+  assert.doesNotMatch(config, /coral-secret/);
+  assert.doesNotMatch(config, /\[cloud\]/);
+  assert.doesNotMatch(config, /\[llm-proxy\.providers\.openai\]/);
+  assert.doesNotMatch(config, /https:\/\/llm\.coralcloud\.ai\/openai\/v1/);
   assert.doesNotMatch(config, /https:\/\/llm\.coralcloud\.ai\/deepseek\/v1/);
 });
 

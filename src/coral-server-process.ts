@@ -4,10 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 
-import {
-  coralCloudBaseUrlForModel,
-  resolveConfiguredModel
-} from "./model-routing.js";
+import { resolveConfiguredModel } from "./model-routing.js";
 
 type CoralServerChild = ChildProcessByStdio<null, Readable, Readable>;
 
@@ -87,24 +84,11 @@ export function buildRuntimeCoralConfig(
   env: NodeJS.ProcessEnv = {},
   agentPaths = SPECIALIST_AGENT_NAMES.map((agentName) => path.resolve(projectRoot, "agents", agentName))
 ): string {
-  const cloudApiKey = firstNonEmpty(env.CORAL_API_KEY, env.CLOUD_API_KEY);
-  const modelName = resolveConfiguredModel(env);
-  const providerBaseUrl = coralCloudBaseUrlForModel(modelName);
+  void env;
   return [
     "[auth]",
     'keys = ["dev"]',
     "",
-    ...(cloudApiKey
-      ? [
-          "[cloud]",
-          `apiKey = ${JSON.stringify(cloudApiKey)}`,
-          "",
-          "[llm-proxy.providers.openai]",
-          `apiKey = ${JSON.stringify(cloudApiKey)}`,
-          `baseUrl = ${JSON.stringify(providerBaseUrl)}`,
-          ""
-        ]
-      : []),
     "[registry]",
     "includeCoralHomeAgents = false",
     "localAgents = [",
@@ -287,10 +271,6 @@ function ensureTrailingSlash(value: string): string {
 
 function resolveDelveHome(env: NodeJS.ProcessEnv): string {
   return env.DELVE_HOME && env.DELVE_HOME.length > 0 ? env.DELVE_HOME : path.join(homedir(), ".delve");
-}
-
-function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
-  return values.find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
 }
 
 function slugForPath(value: string): string {
