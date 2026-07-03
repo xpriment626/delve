@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import { mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile, rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { config as loadEnv } from "dotenv";
 
-import { authConfigPath, getAuthStatus, parseAuthProvider, setAuthToken, AUTH_ENV_BY_PROVIDER, type SetAuthTokenResult, type AuthStatus } from "./auth-config.js";
+import { authConfigPath, getAuthStatus, parseAuthProvider, resolveDelveHome, setAuthToken, AUTH_ENV_BY_PROVIDER, type SetAuthTokenResult, type AuthStatus } from "./auth-config.js";
 import { getCodexSkillStatus, installCodexSkill, type CodexSkillStatus, type InstallCodexSkillResult } from "./codex-skill.js";
 import { createDoctorReport } from "./doctor.js";
 import type { DoctorReport } from "./doctor.js";
@@ -55,6 +56,20 @@ program
   .action(async (options: { db: string; out: string; coralUrl: string }) => {
     const report = await createInitReport(options);
     outputWithHuman(report, formatInitReport(report));
+  });
+
+program
+  .command("uninstall")
+  .description("Remove Delve-owned local state before uninstalling the npm package.")
+  .option("--dry-run", "show what would be removed without deleting files")
+  .option("--force", "remove the Codex skill even if it differs from the packaged skill")
+  .action(async (options: { dryRun?: boolean; force?: boolean }) => {
+    const report = await createUninstallReport({
+      dryRun: Boolean(options.dryRun),
+      force: Boolean(options.force)
+    });
+    outputWithHuman(report, formatUninstallReport(report));
+    if (!report.ok) process.exitCode = 1;
   });
 
 const auth = program.command("auth").description("Manage Delve credentials in a private local config file.");
@@ -331,6 +346,24 @@ interface InitReport {
   nextSteps: string[];
 }
 
+interface UninstallReport {
+  ok: boolean;
+  dryRun: boolean;
+  force: boolean;
+  paths: {
+    delveHome: string;
+    codexSkill: string;
+  };
+  removed: string[];
+  wouldRemove: string[];
+  missing: string[];
+  skipped: Array<{
+    path: string;
+    reason: string;
+  }>;
+  nextStep: string;
+}
+
 async function createInitReport(options: { db: string; out: string; coralUrl: string }): Promise<InitReport> {
   const dbPath = path.resolve(options.db);
   const outDir = path.resolve(options.out);
@@ -359,6 +392,74 @@ async function createInitReport(options: { db: string; out: string; coralUrl: st
     codexSkill,
     nextSteps
   };
+}
+
+async function createUninstallReport(options: { dryRun: boolean; force: boolean }): Promise<UninstallReport> {
+  const delveHome = path.resolve(resolveDelveHome(process.env));
+  const codexSkill = await getCodexSkillStatus({
+    projectRoot: PROJECT_ROOT,
+    env: process.env
+  });
+  const report: UninstallReport = {
+    ok: true,
+    dryRun: options.dryRun,
+    force: options.force,
+    paths: {
+      delveHome,
+      codexSkill: codexSkill.targetPath
+    },
+    removed: [],
+    wouldRemove: [],
+    missing: [],
+    skipped: [],
+    nextStep: "npm uninstall -g @itsshadowai/delve"
+  };
+
+  await markOrRemovePath(report, delveHome);
+
+  if (codexSkill.targetExists && !codexSkill.matchesPackagedSkill && !options.force) {
+    report.skipped.push({
+      path: codexSkill.targetPath,
+      reason: "Codex skill exists but differs from the packaged Delve skill; pass --force to remove it"
+    });
+  } else {
+    await markOrRemovePath(report, codexSkill.targetPath);
+  }
+
+  report.ok = report.skipped.length === 0;
+  return report;
+}
+
+async function markOrRemovePath(report: UninstallReport, targetPath: string): Promise<void> {
+  ensureSafeCleanupPath(targetPath);
+  if (!(await pathExists(targetPath))) {
+    report.missing.push(targetPath);
+    return;
+  }
+  if (report.dryRun) {
+    report.wouldRemove.push(targetPath);
+    return;
+  }
+  await rm(targetPath, { recursive: true, force: true });
+  report.removed.push(targetPath);
+}
+
+function ensureSafeCleanupPath(targetPath: string): void {
+  const resolved = path.resolve(targetPath);
+  const parsed = path.parse(resolved);
+  const unsafePaths = new Set([parsed.root, path.resolve(homedir()), path.resolve(process.cwd())]);
+  if (unsafePaths.has(resolved)) {
+    throw new Error(`Refusing to remove unsafe path: ${targetPath}`);
+  }
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function buildInitNextSteps(doctor: DoctorReport, codexSkill: CodexSkillStatus): string[] {
@@ -409,6 +510,30 @@ function formatInitReport(report: InitReport): string {
     ...report.nextSteps.map((step, index) => `  ${index + 1}. ${step}`)
   ].filter((line) => line !== "");
   return lines.join("\n");
+}
+
+function formatUninstallReport(report: UninstallReport): string {
+  const lines = [
+    "Delve uninstall cleanup",
+    "",
+    `Mode: ${report.dryRun ? "dry run" : "remove"}`,
+    `Delve home: ${formatCleanupStatus(report, report.paths.delveHome)}`,
+    `Codex skill: ${formatCleanupStatus(report, report.paths.codexSkill)}`,
+    report.skipped.length > 0 ? "" : undefined,
+    ...report.skipped.map((item) => `Skipped: ${item.path} (${item.reason})`),
+    "",
+    `Next step: ${report.nextStep}`
+  ].filter((line): line is string => typeof line === "string");
+  return lines.join("\n");
+}
+
+function formatCleanupStatus(report: UninstallReport, targetPath: string): string {
+  if (report.removed.includes(targetPath)) return `[removed] ${targetPath}`;
+  if (report.wouldRemove.includes(targetPath)) return `[would remove] ${targetPath}`;
+  if (report.missing.includes(targetPath)) return `[missing] ${targetPath}`;
+  const skipped = report.skipped.find((item) => item.path === targetPath);
+  if (skipped) return `[skipped] ${targetPath}`;
+  return `[unchanged] ${targetPath}`;
 }
 
 function formatSkillStatus(status: CodexSkillStatus): string {

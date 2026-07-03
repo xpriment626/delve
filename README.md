@@ -13,6 +13,24 @@ delve --help
 
 Delve requires Node.js 24 or newer because the blackboard uses `node:sqlite`.
 
+## Uninstall
+
+npm does not run package cleanup hooks on uninstall, so remove Delve-owned local state before removing the global package:
+
+```bash
+delve uninstall --dry-run
+delve uninstall
+npm uninstall -g @itsshadowai/delve
+```
+
+`delve uninstall` removes `${DELVE_HOME:-~/.delve}` and the packaged Codex skill at `${CODEX_HOME:-~/.codex}/skills/delve`. If that skill was locally edited, pass `--force` to remove it. Project-local research outputs such as `.delve/blackboard.db` and `artifacts/` are left alone.
+
+If you already removed the CLI first, clean the default paths manually:
+
+```bash
+rm -rf ~/.delve ~/.codex/skills/delve
+```
+
 ## Prerequisites
 
 Required for live research:

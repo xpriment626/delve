@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -231,6 +231,65 @@ test("codex install-skill copies packaged skill and protects existing edits", as
     );
     assert.equal(forced.status, 0, forced.stderr);
     assert.equal(JSON.parse(forced.stdout).action, "overwrite");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("uninstall previews and removes Delve home plus the installed Codex skill", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "delve-uninstall-"));
+  try {
+    const delveHome = path.join(dir, ".delve");
+    const codexHome = path.join(dir, ".codex");
+    const skillTarget = path.join(codexHome, "skills", "delve");
+    await mkdir(delveHome, { recursive: true });
+    await writeFile(path.join(delveHome, "config.env"), "EXA_API_KEY=test\n", "utf8");
+
+    const install = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "src/cli.ts", "--json", "codex", "install-skill", "--target", skillTarget],
+      { cwd: ROOT, encoding: "utf8", env: process.env }
+    );
+    assert.equal(install.status, 0, install.stderr);
+
+    const env = {
+      ...process.env,
+      DELVE_HOME: delveHome,
+      CODEX_HOME: codexHome
+    };
+    const dryRun = spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", "--json", "uninstall", "--dry-run"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env
+    });
+    assert.equal(dryRun.status, 0, dryRun.stderr);
+    const dryRunPayload = JSON.parse(dryRun.stdout) as {
+      dryRun: boolean;
+      wouldRemove: string[];
+      nextStep: string;
+    };
+    assert.equal(dryRunPayload.dryRun, true);
+    assert.deepEqual(dryRunPayload.wouldRemove.sort(), [delveHome, skillTarget].sort());
+    assert.match(dryRunPayload.nextStep, /npm uninstall -g @itsshadowai\/delve/);
+    assert.equal(existsSync(delveHome), true);
+    assert.equal(existsSync(skillTarget), true);
+
+    const uninstall = spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", "--json", "uninstall"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      env
+    });
+    assert.equal(uninstall.status, 0, uninstall.stderr);
+    const payload = JSON.parse(uninstall.stdout) as {
+      ok: boolean;
+      removed: string[];
+      nextStep: string;
+    };
+    assert.equal(payload.ok, true);
+    assert.deepEqual(payload.removed.sort(), [delveHome, skillTarget].sort());
+    assert.match(payload.nextStep, /npm uninstall -g @itsshadowai\/delve/);
+    assert.equal(existsSync(delveHome), false);
+    assert.equal(existsSync(skillTarget), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

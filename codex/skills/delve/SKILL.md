@@ -36,6 +36,18 @@ delve auth status
 
 `delve auth set` writes `${DELVE_HOME:-~/.delve}/config.env` with file mode `0600`. Use `--stdin` only for automation where the token is already in an environment variable.
 
+## Cleanup
+
+Run Delve cleanup before uninstalling the global npm package:
+
+```bash
+delve uninstall --dry-run
+delve uninstall
+npm uninstall -g @itsshadowai/delve
+```
+
+`delve uninstall` removes `${DELVE_HOME:-~/.delve}` and `${CODEX_HOME:-~/.codex}/skills/delve`. It intentionally leaves project-local research outputs alone. If the Codex skill was locally edited, pass `--force` to remove it.
+
 ## Run Research
 
 Prefer project-local outputs unless the user specifies a different directory:
