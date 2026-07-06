@@ -35,6 +35,9 @@ export interface RunResearchResult {
   topic: string;
   agentsCount: number;
   finalizationBlockedBeforeNegotiation: boolean;
+  usableFinal: boolean;
+  qualityGate: FinalPackage["qualityGate"];
+  runQuality: FinalPackage["runQuality"];
   markdownPath: string;
   finalPackagePath: string;
   negotiation: FinalPackage["negotiation"];
@@ -94,36 +97,37 @@ export async function runResearch(options: RunResearchOptions): Promise<RunResea
       }
     ]
   });
-  db.recordNegotiationRound({
-    runId: run.id,
-    phase: "consensus",
-    topic: "Final framing",
-    transcript:
-      "Agents agreed to present optimization techniques as a layered latency, architecture, and quality playbook with explicit measurement caveats.",
-    verdicts: [
-      {
-        agentName: "latency-researcher",
-        stance: "accept",
-        rationale: "Core latency levers are retained."
-      },
-      {
-        agentName: "systems-researcher",
-        stance: "accept",
-        rationale: "The final artifact includes runtime and observability caveats."
-      },
-      {
-        agentName: "quality-researcher",
-        stance: "dissent",
-        rationale: "The artifact should still warn that subjective UX can lag numeric latency metrics."
-      }
-    ]
-  });
 
   if (run.topologyMode === "dynamic-revision") {
     runOfflineDynamicRevisionLoop(db, run.id);
+  } else {
+    db.recordNegotiationRound({
+      runId: run.id,
+      phase: "consensus",
+      topic: "Final framing",
+      transcript:
+        "Agents agreed to present optimization techniques as a layered latency, architecture, and quality playbook with explicit measurement caveats.",
+      verdicts: [
+        {
+          agentName: "latency-researcher",
+          stance: "accept",
+          rationale: "Core latency levers are retained."
+        },
+        {
+          agentName: "systems-researcher",
+          stance: "accept",
+          rationale: "The final artifact includes runtime and observability caveats."
+        },
+        {
+          agentName: "quality-researcher",
+          stance: "dissent",
+          rationale: "The artifact should still warn that subjective UX can lag numeric latency metrics."
+        }
+      ]
+    });
   }
 
-  const finalPackage = db.finalizeRun(run.id);
+  const finalPackage = db.finalizeRun(run.id, { finalizationBlockedBeforeNegotiation });
   const { markdownPath, finalPackagePath } = await writeFinalArtifacts(options.outDir, run.id, finalPackage);
 
   return {
@@ -132,6 +136,9 @@ export async function runResearch(options: RunResearchOptions): Promise<RunResea
     topic: run.topic,
     agentsCount: SPECIALIST_AGENTS.length,
     finalizationBlockedBeforeNegotiation,
+    usableFinal: finalPackage.usableFinal,
+    qualityGate: finalPackage.qualityGate,
+    runQuality: finalPackage.runQuality,
     markdownPath,
     finalPackagePath,
     negotiation: finalPackage.negotiation,
@@ -256,7 +263,7 @@ async function runLiveResearch(options: RunResearchOptions): Promise<RunResearch
       });
     }
 
-    const finalPackage = db.finalizeRun(run.id);
+    const finalPackage = db.finalizeRun(run.id, { finalizationBlockedBeforeNegotiation });
     const { markdownPath, finalPackagePath } = await writeFinalArtifacts(options.outDir, run.id, finalPackage);
     return {
       ok: true,
@@ -264,6 +271,9 @@ async function runLiveResearch(options: RunResearchOptions): Promise<RunResearch
       topic: run.topic,
       agentsCount: SPECIALIST_AGENTS.length,
       finalizationBlockedBeforeNegotiation,
+      usableFinal: finalPackage.usableFinal,
+      qualityGate: finalPackage.qualityGate,
+      runQuality: finalPackage.runQuality,
       markdownPath,
       finalPackagePath,
       negotiation: finalPackage.negotiation,
@@ -462,6 +472,27 @@ function runOfflineDynamicRevisionLoop(db: Blackboard, runId: string): void {
       details: { evidenceNoteIds: resolved.evidenceNoteIds }
     });
   }
+  if (tasks.length > 0) {
+    db.recordNegotiationRound({
+      runId,
+      phase: "consensus",
+      topic: "Post-revision review",
+      transcript: "Offline dynamic-revision fixture re-reviewed the follow-up work and accepted the revised package.",
+      verdicts: SPECIALIST_AGENTS.map((agentName) => ({
+        agentName,
+        stance: "accept" as const,
+        rationale: "Revision follow-up was recorded and no active blocker remains in the offline fixture."
+      }))
+    });
+    db.recordTopologyEvent({
+      runId,
+      eventType: "post_revision_review_recorded",
+      actor: "delve",
+      targetAgents: [...SPECIALIST_AGENTS],
+      rationale: "Recorded offline post-revision acceptance so resolved follow-up tasks are re-reviewed before finalization.",
+      details: { revisionTaskCount: tasks.length }
+    });
+  }
 }
 
 async function runLiveDynamicRevisionLoop(input: {
@@ -542,6 +573,77 @@ async function runLiveDynamicRevisionLoop(input: {
       details: { evidenceNoteIds }
     });
   }
+  if (tasks.length > 0) {
+    await runLivePostRevisionReview(input, tasks);
+  }
+}
+
+async function runLivePostRevisionReview(
+  input: {
+    db: Blackboard;
+    runId: string;
+    topic: string;
+    dbPath: string;
+    client: CoralClient;
+    session: CoralSessionIdentifier;
+    timeoutMs: number;
+  },
+  tasks: RevisionTaskRecord[]
+): Promise<void> {
+  const previousMaxRoundId = Math.max(0, ...input.db.listNegotiationRounds(input.runId).map((round) => round.id));
+  const actor = SPECIALIST_AGENTS[0];
+  const thread = await input.client.createThread({
+    ...input.session,
+    actor,
+    threadName: "post-revision review",
+    participantNames: SPECIALIST_AGENTS.slice(1)
+  });
+  input.db.recordTopologyEvent({
+    runId: input.runId,
+    eventType: "post_revision_review_thread_created",
+    actor,
+    targetAgents: [...SPECIALIST_AGENTS],
+    threadId: thread.id,
+    rationale: "Opened a post-revision Coral thread to re-review follow-up notes before finalization.",
+    details: { revisionTaskIds: tasks.map((task) => task.id) }
+  });
+  await sendPhaseToAgents(input.client, input.session, thread.id, {
+    phase: "negotiate",
+    topic: input.topic,
+    runId: input.runId,
+    dbPath: input.dbPath
+  });
+  input.db.recordTopologyEvent({
+    runId: input.runId,
+    eventType: "post_revision_review_requested",
+    actor,
+    targetAgents: [...SPECIALIST_AGENTS],
+    threadId: thread.id,
+    rationale: "Mentioned all specialists for a post-revision verdict pass.",
+    details: { previousMaxRoundId }
+  });
+  await waitForBlackboard(
+    () => {
+      const reviewerNames = new Set(
+        input.db
+          .listNegotiationRounds(input.runId)
+          .filter((round) => round.id > previousMaxRoundId)
+          .flatMap((round) => round.verdicts.map((verdict) => verdict.agentName))
+      );
+      return SPECIALIST_AGENTS.every((agentName) => reviewerNames.has(agentName));
+    },
+    "post-revision negotiation verdicts",
+    input.timeoutMs
+  );
+  input.db.recordTopologyEvent({
+    runId: input.runId,
+    eventType: "post_revision_review_completed",
+    actor: "delve",
+    targetAgents: [...SPECIALIST_AGENTS],
+    threadId: thread.id,
+    rationale: "All specialists recorded post-revision verdicts.",
+    details: { revisionTaskIds: tasks.map((task) => task.id) }
+  });
 }
 
 function puppetActorForTargets(targetAgents: readonly string[]): string {

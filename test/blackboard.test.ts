@@ -76,6 +76,9 @@ test("final output is blocked until all specialist agents record a negotiation v
     const finalPackage = db.finalizeRun(run.id);
     assert.equal(finalPackage.runId, run.id);
     assert.equal(finalPackage.negotiation.status, "complete_with_dissent");
+    assert.equal(finalPackage.usableFinal, false);
+    assert.equal(finalPackage.qualityGate.status, "has_dissent");
+    assert.deepEqual(finalPackage.qualityGate.reasons, ["current_dissenting_verdicts"]);
     assert.equal(finalPackage.notes.length, 1);
     assert.equal(finalPackage.claims.length, 1);
     assert.match(finalPackage.markdown, /Endpointing and barge-in handling/);
@@ -148,9 +151,14 @@ test("final package preserves revise status and degraded agent metadata", async 
 
     const finalPackage = db.finalizeRun(run.id);
     assert.equal(finalPackage.negotiation.status, "complete_with_revision_requests");
+    assert.equal(finalPackage.usableFinal, false);
+    assert.equal(finalPackage.qualityGate.status, "needs_revision");
+    assert.deepEqual(finalPackage.qualityGate.reasons, ["current_revision_requests", "degraded_agent_work"]);
     assert.equal(finalPackage.runQuality.degradedWork.length, 1);
     assert.equal(finalPackage.runQuality.revisionRequests.length, 1);
+    assert.equal(finalPackage.finalizationBlockedBeforeNegotiation, false);
     assert.match(finalPackage.markdown, /Complete with Revision Requests/);
+    assert.match(finalPackage.markdown, /Quality gate: Not usable without review/);
     assert.match(finalPackage.markdown, /model_not_used/);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -254,6 +262,9 @@ test("final package includes dynamic revision topology trace and resolved tasks"
     assert.equal(finalPackage.topologyTrace.mode, "dynamic-revision");
     assert.equal(finalPackage.topologyTrace.revisionTasks[0]?.status, "resolved");
     assert.equal(finalPackage.topologyTrace.openRevisionTasks.length, 0);
+    assert.equal(finalPackage.negotiation.status, "complete_with_revision_requests");
+    assert.equal(finalPackage.usableFinal, false);
+    assert.equal(finalPackage.qualityGate.status, "needs_revision");
     assert.match(finalPackage.markdown, /## Topology Trace/);
     assert.match(finalPackage.markdown, /dynamic-revision/);
     assert.match(finalPackage.markdown, /Revision: CLI operational constraints/);

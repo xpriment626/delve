@@ -94,11 +94,12 @@ delve --json request /api_v1.json --coral-url http://localhost:5555
 
 ## Handoff
 
-Treat `final-package.json` as the structured source of truth. It contains `notes`, deduplicated `sources`, evidence-backed `claims`, `negotiation`, `runQuality`, `topologyTrace`, `synthesis`, and ready Markdown.
+Treat `final-package.json` as the structured source of truth. It contains `usableFinal`, `qualityGate`, `finalizationBlockedBeforeNegotiation`, `notes`, deduplicated `sources`, evidence-backed `claims`, `negotiation`, `runQuality`, `topologyTrace`, `synthesis`, and ready Markdown.
 
 When drafting final artifacts:
 
 - Preserve dissent, caveats, degraded work, and revision requests.
+- Check `usableFinal` and `qualityGate` before treating the package as accepted synthesis. If `usableFinal` is false, surface the reasons instead of smoothing them away.
 - Use `synthesis.document.recommendedSections` for long-form documents.
 - Use `synthesis.slides.recommendedSlides` for slide outlines.
 - Use the appropriate document, PDF, or presentation skill for native `.docx`, `.pdf`, or `.pptx` output. Delve itself does not create those final native deliverables.
@@ -107,6 +108,6 @@ When drafting final artifacts:
 
 - Prefer `--json` for commands Codex will parse.
 - Keep live write behavior scoped to `research run`; `request` is read-only.
-- Verify `finalizationBlockedBeforeNegotiation` is true before trusting a completed artifact.
+- Preserve `finalizationBlockedBeforeNegotiation` as provenance, but trust `qualityGate.usableFinal` as the final machine-readable quality signal.
 - Inspect `blackboard topology` after `--topology dynamic-revision`.
 - Do not print or pass `CORAL_API_KEY` or `EXA_API_KEY` on the command line.

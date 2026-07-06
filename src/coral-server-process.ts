@@ -194,7 +194,7 @@ function runtimeAgentStartup(projectRoot: string, agentName: string): string {
     "set -euo pipefail",
     `cd ${shellQuote(projectRoot)}`,
     'node_bin="${DELVE_NODE_BIN:-node}"',
-    `exec "$node_bin" dist/src/eve-coral-agent.js --role ${shellQuote(agentName)} --max-messages 3`,
+    `exec "$node_bin" dist/src/eve-coral-agent.js --role ${shellQuote(agentName)} --max-messages 8`,
     ""
   ].join("\n");
 }

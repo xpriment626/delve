@@ -129,10 +129,30 @@ export interface TopologyTrace {
   degradedTopologyActions: TopologyEventRecord[];
 }
 
+export type QualityGateStatus = "usable" | "needs_revision" | "has_dissent" | "degraded";
+
+export interface QualityGate {
+  usableFinal: boolean;
+  status: QualityGateStatus;
+  requiresHumanSynthesis: boolean;
+  reasons: string[];
+  checks: {
+    noCurrentRevisionRequests: boolean;
+    noOpenRevisionTasks: boolean;
+    noDissentingVerdicts: boolean;
+    noDegradedWork: boolean;
+    finalizationBlockedBeforeNegotiation: boolean;
+  };
+  summary: string;
+}
+
 export interface FinalPackage {
   runId: string;
   topic: string;
   format: ArtifactFormat;
+  finalizationBlockedBeforeNegotiation: boolean;
+  usableFinal: boolean;
+  qualityGate: QualityGate;
   notes: NoteRecord[];
   sources: AggregatedSourceRecord[];
   claims: ClaimRecord[];
@@ -597,7 +617,7 @@ export class Blackboard {
     return buildRunQualitySummary(this.listNotes(runId), this.listNegotiationRounds(runId));
   }
 
-  finalizeRun(runId: string): FinalPackage {
+  finalizeRun(runId: string, options: { finalizationBlockedBeforeNegotiation?: boolean } = {}): FinalPackage {
     const blockers = this.finalizationBlockers(runId);
     if (blockers.length > 0) throw new FinalizationBlockedError(blockers);
 
@@ -609,11 +629,21 @@ export class Blackboard {
     const negotiationStatus = summarizeNegotiationStatus(rounds);
     const runQuality = buildRunQualitySummary(notes, rounds);
     const topologyTrace = this.summarizeTopology(runId);
+    const finalizationBlockedBeforeNegotiation = options.finalizationBlockedBeforeNegotiation ?? false;
+    const qualityGate = buildQualityGate(
+      negotiationStatus,
+      runQuality,
+      topologyTrace,
+      finalizationBlockedBeforeNegotiation
+    );
     const synthesis = buildSynthesisHandoff(run.topic, claims, rounds);
     const finalPackage: FinalPackage = {
       runId,
       topic: run.topic,
       format: run.format,
+      finalizationBlockedBeforeNegotiation,
+      usableFinal: qualityGate.usableFinal,
+      qualityGate,
       notes,
       sources,
       claims,
@@ -624,7 +654,18 @@ export class Blackboard {
       runQuality,
       topologyTrace,
       synthesis,
-      markdown: renderMarkdownArtifact(run.topic, notes, sources, claims, rounds, negotiationStatus, runQuality, topologyTrace, synthesis)
+      markdown: renderMarkdownArtifact(
+        run.topic,
+        notes,
+        sources,
+        claims,
+        rounds,
+        negotiationStatus,
+        runQuality,
+        topologyTrace,
+        qualityGate,
+        synthesis
+      )
     };
 
     this.db
@@ -853,6 +894,7 @@ function renderMarkdownArtifact(
   negotiationStatus: NegotiationStatus,
   runQuality: RunQualitySummary,
   topologyTrace: TopologyTrace,
+  qualityGate: QualityGate,
   synthesis: SynthesisHandoff
 ): string {
   const lines = [`# Research: ${topic}`, "", "## Key Claims", ""];
@@ -871,6 +913,14 @@ function renderMarkdownArtifact(
     lines.push(`- ${slide.title}: ${slide.bullets.join("; ")}`);
   }
   lines.push("", "## Run Quality", "");
+  lines.push(`Quality gate: ${qualityGate.usableFinal ? "Usable final" : "Not usable without review"}`);
+  lines.push(`Quality status: ${qualityGate.status}`);
+  lines.push(`Requires human synthesis: ${qualityGate.requiresHumanSynthesis ? "yes" : "no"}`);
+  if (qualityGate.reasons.length > 0) {
+    lines.push("Quality gate reasons:");
+    for (const reason of qualityGate.reasons) lines.push(`- ${reason}`);
+  }
+  lines.push("");
   lines.push(`Negotiation status: ${formatNegotiationStatus(negotiationStatus)}`, "");
   if (runQuality.degradedWork.length === 0) {
     lines.push("- No degraded agent work was recorded.");
@@ -1005,7 +1055,7 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 function summarizeNegotiationStatus(rounds: NegotiationRoundRecord[]): NegotiationStatus {
-  const verdicts = rounds.flatMap((round) => round.verdicts);
+  const verdicts = latestVerdictRecords(rounds);
   if (verdicts.some((verdict) => verdict.stance === "dissent")) return "complete_with_dissent";
   if (verdicts.some((verdict) => verdict.stance === "revise")) return "complete_with_revision_requests";
   return "complete";
@@ -1026,19 +1076,8 @@ function buildRunQualitySummary(notes: NoteRecord[], rounds: NegotiationRoundRec
     });
   }
 
-  const revisionRequests: VerdictQualityRecord[] = [];
-  const dissentingVerdicts: VerdictQualityRecord[] = [];
   for (const round of rounds) {
     for (const verdict of round.verdicts) {
-      const record: VerdictQualityRecord = {
-        agentName: verdict.agentName,
-        stance: verdict.stance,
-        rationale: verdict.rationale,
-        roundId: round.id,
-        phase: round.phase,
-        topic: round.topic,
-        execution: verdict.execution
-      };
       if (verdict.execution.degraded) {
         degradedWork.push({
           phase: "negotiation",
@@ -1051,12 +1090,73 @@ function buildRunQualitySummary(notes: NoteRecord[], rounds: NegotiationRoundRec
           degradationReasons: verdict.execution.degradationReasons
         });
       }
-      if (verdict.stance === "revise") revisionRequests.push(record);
-      if (verdict.stance === "dissent") dissentingVerdicts.push(record);
     }
   }
 
+  const currentVerdicts = latestVerdictRecords(rounds);
+  const revisionRequests = currentVerdicts.filter((verdict) => verdict.stance === "revise");
+  const dissentingVerdicts = currentVerdicts.filter((verdict) => verdict.stance === "dissent");
+
   return { degradedWork, revisionRequests, dissentingVerdicts };
+}
+
+function latestVerdictRecords(rounds: NegotiationRoundRecord[]): VerdictQualityRecord[] {
+  const byAgent = new Map<string, VerdictQualityRecord>();
+  for (const round of rounds) {
+    for (const verdict of round.verdicts) {
+      byAgent.set(verdict.agentName, {
+        agentName: verdict.agentName,
+        stance: verdict.stance,
+        rationale: verdict.rationale,
+        roundId: round.id,
+        phase: round.phase,
+        topic: round.topic,
+        execution: verdict.execution
+      });
+    }
+  }
+  return [...byAgent.values()];
+}
+
+function buildQualityGate(
+  negotiationStatus: NegotiationStatus,
+  runQuality: RunQualitySummary,
+  topologyTrace: TopologyTrace,
+  finalizationBlockedBeforeNegotiation: boolean
+): QualityGate {
+  const checks = {
+    noCurrentRevisionRequests: runQuality.revisionRequests.length === 0,
+    noOpenRevisionTasks: topologyTrace.openRevisionTasks.length === 0,
+    noDissentingVerdicts: runQuality.dissentingVerdicts.length === 0,
+    noDegradedWork: runQuality.degradedWork.length === 0,
+    finalizationBlockedBeforeNegotiation
+  };
+  const reasons: string[] = [];
+  if (!checks.noCurrentRevisionRequests) reasons.push("current_revision_requests");
+  if (!checks.noOpenRevisionTasks) reasons.push("open_revision_tasks");
+  if (!checks.noDissentingVerdicts) reasons.push("current_dissenting_verdicts");
+  if (!checks.noDegradedWork) reasons.push("degraded_agent_work");
+
+  const usableFinal = reasons.length === 0 && negotiationStatus === "complete";
+  const status: QualityGateStatus =
+    !checks.noCurrentRevisionRequests || !checks.noOpenRevisionTasks
+      ? "needs_revision"
+      : !checks.noDissentingVerdicts
+        ? "has_dissent"
+        : !checks.noDegradedWork
+          ? "degraded"
+          : "usable";
+
+  return {
+    usableFinal,
+    status,
+    requiresHumanSynthesis: !usableFinal,
+    reasons,
+    checks,
+    summary: usableFinal
+      ? "No current revision requests, dissent, degraded work, or open topology tasks were recorded."
+      : `Final package requires review before use: ${reasons.join(", ")}.`
+  };
 }
 
 function normalizeExecution(input?: Partial<AgentExecutionMetadata>): AgentExecutionMetadata {

@@ -402,6 +402,8 @@ test("offline fixture research run records blackboard negotiation and writes mar
       ok: boolean;
       runId: string;
       finalizationBlockedBeforeNegotiation: boolean;
+      usableFinal: boolean;
+      qualityGate: { status: string; reasons: string[] };
       agentsCount: number;
       markdownPath: string;
       finalPackagePath: string;
@@ -409,6 +411,8 @@ test("offline fixture research run records blackboard negotiation and writes mar
     };
     assert.equal(payload.ok, true);
     assert.equal(payload.finalizationBlockedBeforeNegotiation, true);
+    assert.equal(payload.usableFinal, false);
+    assert.equal(payload.qualityGate.status, "has_dissent");
     assert.equal(payload.agentsCount, 3);
     assert.equal(payload.negotiation.status, "complete_with_dissent");
     assert.equal(existsSync(payload.markdownPath), true);
@@ -423,6 +427,9 @@ test("offline fixture research run records blackboard negotiation and writes mar
 
     const finalPackage = JSON.parse(await readFile(payload.finalPackagePath, "utf8")) as {
       sources: unknown[];
+      finalizationBlockedBeforeNegotiation: boolean;
+      usableFinal: boolean;
+      qualityGate: { status: string; reasons: string[] };
       runQuality: {
         degradedWork: unknown[];
         revisionRequests: unknown[];
@@ -434,9 +441,12 @@ test("offline fixture research run records blackboard negotiation and writes mar
       };
     };
     assert.equal(finalPackage.sources.length, 3);
+    assert.equal(finalPackage.finalizationBlockedBeforeNegotiation, true);
+    assert.equal(finalPackage.usableFinal, false);
+    assert.equal(finalPackage.qualityGate.status, "has_dissent");
     assert.equal(finalPackage.runQuality.degradedWork.length, 0);
-    assert.equal(finalPackage.runQuality.revisionRequests.length, 1);
-    assert.equal(finalPackage.runQuality.dissentingVerdicts.length, 2);
+    assert.equal(finalPackage.runQuality.revisionRequests.length, 0);
+    assert.equal(finalPackage.runQuality.dissentingVerdicts.length, 1);
     assert.equal(finalPackage.synthesis.document.recommendedSections.length, 4);
     assert.equal(finalPackage.synthesis.slides.recommendedSlides.length, 4);
 
@@ -482,8 +492,8 @@ test("offline fixture research run records blackboard negotiation and writes mar
       dissentingVerdicts: unknown[];
     };
     assert.equal(quality.degradedWork.length, 0);
-    assert.equal(quality.revisionRequests.length, 1);
-    assert.equal(quality.dissentingVerdicts.length, 2);
+    assert.equal(quality.revisionRequests.length, 0);
+    assert.equal(quality.dissentingVerdicts.length, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -523,9 +533,13 @@ test("offline dynamic-revision run records inspectable topology trace", async ()
       ok: boolean;
       runId: string;
       finalPackagePath: string;
+      usableFinal: boolean;
+      qualityGate: { status: string; reasons: string[] };
       topology: { mode: string; revisionTasks: unknown[]; openRevisionTasks: unknown[] };
     };
     assert.equal(payload.ok, true);
+    assert.equal(payload.usableFinal, true);
+    assert.equal(payload.qualityGate.status, "usable");
     assert.equal(payload.topology.mode, "dynamic-revision");
     assert.equal(payload.topology.revisionTasks.length, 1);
     assert.equal(payload.topology.openRevisionTasks.length, 0);
@@ -537,12 +551,18 @@ test("offline dynamic-revision run records inspectable topology trace", async ()
         revisionTasks: Array<{ status: string; assignedAgents: string[] }>;
         openRevisionTasks: unknown[];
       };
+      usableFinal: boolean;
+      qualityGate: { status: string; reasons: string[] };
+      negotiation: { status: string };
       markdown: string;
     };
     assert.equal(finalPackage.topologyTrace.mode, "dynamic-revision");
     assert.equal(finalPackage.topologyTrace.revisionTasks[0]?.status, "resolved");
     assert.deepEqual(finalPackage.topologyTrace.revisionTasks[0]?.assignedAgents, ["systems-researcher"]);
     assert.equal(finalPackage.topologyTrace.openRevisionTasks.length, 0);
+    assert.equal(finalPackage.negotiation.status, "complete");
+    assert.equal(finalPackage.usableFinal, true);
+    assert.equal(finalPackage.qualityGate.status, "usable");
     assert.match(finalPackage.markdown, /## Topology Trace/);
 
     const topologyResult = spawnSync(

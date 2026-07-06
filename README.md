@@ -192,7 +192,7 @@ Secrets are never printed in full. `doctor` reports only presence and source cat
 
 `--topology fixed` is the default. It runs the specialist roster, records notes/claims/sources, then requires negotiation before finalization.
 
-`--topology dynamic-revision` keeps the same specialist roster but turns `revise` verdicts into targeted follow-up tasks before finalization. It records revision tasks and topology events in SQLite and `final-package.json`.
+`--topology dynamic-revision` keeps the same specialist roster but turns current `revise` verdicts into targeted follow-up tasks before finalization. After follow-up notes are written, Delve requests a post-revision verdict pass so a resolved task is not mistaken for accepted synthesis. It records revision tasks, post-revision review events, and topology events in SQLite and `final-package.json`.
 
 ## Model And Source Routing
 
@@ -226,6 +226,8 @@ Delve does not create native `.docx` or `.pptx` deliverables. Codex owns final a
 
 Use `final-package.json` as the source of truth. Important fields:
 
+- `usableFinal` and `qualityGate`: machine-readable signal for whether downstream Codex should treat the package as accepted synthesis.
+- `finalizationBlockedBeforeNegotiation`: whether Delve's pre-negotiation guard blocked early finalization during the run.
 - `notes`: role-specific blackboard notes with source metadata.
 - `sources`: deduplicated sources with domains, reliability notes, and linked note IDs.
 - `claims`: evidence-backed claims with confidence, caveats, and source URLs.
