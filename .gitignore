@@ -31,3 +31,6 @@ coverage/
 tmp/
 temp/
 .DS_Store
+
+# Editor metadata
+.idea/

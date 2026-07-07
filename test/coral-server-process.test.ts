@@ -38,9 +38,9 @@ test("Coral auto-start forwards explicit alternate loopback ports", () => {
   ]);
 });
 
-test("runtime Coral config uses selected-model provider and absolute agent paths", () => {
+test("runtime Coral config uses absolute agent paths without persisted proxy settings", () => {
   const projectRoot = "/tmp/delve-project";
-  const config = buildRuntimeCoralConfig(projectRoot, { CORAL_API_KEY: "coral-secret" });
+  const config = buildRuntimeCoralConfig(projectRoot);
 
   assert.doesNotMatch(config, /coral-secret/);
   assert.doesNotMatch(config, /\[cloud\]/);
@@ -55,24 +55,14 @@ test("runtime Coral config uses selected-model provider and absolute agent paths
   assert.doesNotMatch(config, /"agents\//);
 });
 
-test("runtime Coral config does not persist Coral Cloud secrets for non-DeepSeek models", () => {
-  const config = buildRuntimeCoralConfig("/tmp/delve-project", {
-    CORAL_API_KEY: "coral-secret",
-    DELVE_MODEL: "gpt-5.4-nano"
-  });
-
-  assert.doesNotMatch(config, /coral-secret/);
-  assert.doesNotMatch(config, /\[cloud\]/);
-  assert.doesNotMatch(config, /\[llm-proxy\.providers\.openai\]/);
-  assert.doesNotMatch(config, /https:\/\/llm\.coralcloud\.ai\/openai\/v1/);
-  assert.doesNotMatch(config, /https:\/\/llm\.coralcloud\.ai\/deepseek\/v1/);
-});
-
 test("Coral server env points at generated runtime config and maps Coral API key for Cloud proxy", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "delve-coral-config-"));
   const projectRoot = "/tmp/delve-project";
   try {
-    const configPath = await writeRuntimeCoralConfig(projectRoot, { DELVE_HOME: dir });
+    const configPath = await writeRuntimeCoralConfig(projectRoot, {
+      CORAL_API_KEY: "coral-secret",
+      DELVE_HOME: dir
+    });
     const env = buildCoralServerEnv(projectRoot, {
       CORAL_API_KEY: "coral-secret",
       CLOUD_API_KEY: ""
@@ -93,6 +83,7 @@ test("Coral server env points at generated runtime config and maps Coral API key
     assert.match(startup, /exec "\$node_bin" dist\/src\/eve-coral-agent\.js/);
     assert.equal((await stat(dir)).mode & 0o777, 0o700);
     assert.equal((await stat(configPath)).mode & 0o777, 0o600);
+    assert.doesNotMatch(configText, /coral-secret/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

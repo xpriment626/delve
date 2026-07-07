@@ -1,9 +1,9 @@
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
 import type { Readable } from "node:stream";
 
+import { resolveDelveHome } from "./auth-config.js";
 import { resolveConfiguredModel } from "./model-routing.js";
 
 type CoralServerChild = ChildProcessByStdio<null, Readable, Readable>;
@@ -81,10 +81,8 @@ export function buildCoralServerEnv(
 
 export function buildRuntimeCoralConfig(
   projectRoot: string,
-  env: NodeJS.ProcessEnv = {},
   agentPaths = SPECIALIST_AGENT_NAMES.map((agentName) => path.resolve(projectRoot, "agents", agentName))
 ): string {
-  void env;
   return [
     "[auth]",
     'keys = ["dev"]',
@@ -104,7 +102,7 @@ export async function writeRuntimeCoralConfig(projectRoot: string, env: NodeJS.P
   await mkdir(delveHome, { recursive: true, mode: 0o700 });
   await chmod(delveHome, 0o700);
   const agentPaths = await writeRuntimeAgentManifests(projectRoot, env, delveHome);
-  await writeFile(configPath, buildRuntimeCoralConfig(projectRoot, env, agentPaths), { mode: 0o600 });
+  await writeFile(configPath, buildRuntimeCoralConfig(projectRoot, agentPaths), { mode: 0o600 });
   await chmod(configPath, 0o600);
   return configPath;
 }
@@ -267,10 +265,6 @@ async function stopCoralServer(child: CoralServerChild): Promise<void> {
 
 function ensureTrailingSlash(value: string): string {
   return value.endsWith("/") ? value : `${value}/`;
-}
-
-function resolveDelveHome(env: NodeJS.ProcessEnv): string {
-  return env.DELVE_HOME && env.DELVE_HOME.length > 0 ? env.DELVE_HOME : path.join(homedir(), ".delve");
 }
 
 function slugForPath(value: string): string {
